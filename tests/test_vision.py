@@ -91,3 +91,44 @@ def test_inference_is_deterministic(trained_board_estimator):
     second = trained_board_estimator.estimate_square(SQUARE_IMAGE_PATH)
     for label in TARGET_MAP:
         assert getattr(first, label) == getattr(second, label)
+
+
+### Bayesian prior correction plumbing
+def _prior_correction_estimator(tmp_path, prior_correction, log_prior):
+    """A CNN BoardEstimator over a minimal calibration file, with a known log_prior on the model."""
+    import json
+
+    metadata_path = tmp_path / "calibration_metadata.json"
+    metadata_path.write_text(
+        json.dumps({"camera_natural_orientation": {"order": {"tl": "a8"}}}), encoding="utf-8"
+    )
+    model = SquareClassifierMultiHead(log_prior=log_prior)
+    return BoardEstimator(
+        model_type="CNN",
+        model=model,
+        calibration_metadata_path=metadata_path,
+        prior_correction=prior_correction,
+    )
+
+def test_board_estimator_applies_prior_by_default(tmp_path):
+    """Live inference should always use the correction when a prior is available, so the default
+    is on -- the robot has no reason to deliberately use the worse decision rule.
+    """
+    log_prior = torch.full((13,), -2.0)
+    estimator = _prior_correction_estimator(tmp_path, prior_correction=True, log_prior=log_prior)
+    assert estimator.log_prior is not None
+    assert torch.allclose(estimator.log_prior, log_prior)
+
+def test_board_estimator_prior_can_be_switched_off(tmp_path):
+    """Eval passes prior_correction explicitly so a checkpoint can be scored both ways."""
+    estimator = _prior_correction_estimator(
+        tmp_path, prior_correction=False, log_prior=torch.full((13,), -2.0)
+    )
+    assert estimator.log_prior is None
+
+def test_board_estimator_default_zero_prior_is_harmless(tmp_path):
+    """A model with no known prior (all-zeros buffer, e.g. legacy weights) still resolves to a
+    tensor, but subtracting it is a no-op -- so "always on" is safe for old checkpoints.
+    """
+    estimator = _prior_correction_estimator(tmp_path, prior_correction=True, log_prior=None)
+    assert torch.allclose(estimator.log_prior, torch.zeros(13))

@@ -42,3 +42,6 @@ optimizer:
 scheduler:
   # Cosine-anneals lr from optimizer.lr down to eta_min over training.epochs epochs.
   eta_min: 1e-6
+
+inference:
+  prior_correction: False

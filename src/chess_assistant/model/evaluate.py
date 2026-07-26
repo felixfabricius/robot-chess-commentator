@@ -18,8 +18,15 @@ from chess_assistant.model.config import (
 
 _split_data_cache = {}
 
-def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device):
+def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device, prior_correction=False):
     """Evaluate the multi-head model on `split` and return a dict of W&B-loggable metrics.
+
+    `prior_correction` switches on Bayesian prior correction (subtracting the model's training
+    log-prior; see reconstruct_13way_logprobs). It deliberately drives BOTH levels below - the
+    square-level 13-way view and the board-level move decode - since a half-corrected scoreboard
+    would be meaningless: both levels have to describe the same decision rule. Unlike live
+    inference (which corrects whenever it can), this defaults to off and is set from the config, so
+    one trained checkpoint can be scored both ways without retraining.
 
     Two levels:
       - Square level, from the dataloader: per-head losses (empty / color / type) and their
@@ -31,6 +38,10 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device)
     """
     model.eval() # important for batch norm; want to use mean and sd that were accumulated during training
     n = len(dataloader.dataset)
+
+    # None when the correction is off, which is exactly what reconstruct_13way_logprobs expects.
+    # getattr keeps this working for a model handed in that predates the log_prior buffer.
+    log_prior = getattr(model, "log_prior", None) if prior_correction else None
 
     empty_loss_sum = 0.0
     color_loss_sum = 0.0
@@ -74,7 +85,9 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device)
                 n_nonempty += n_nonempty_batch
 
             # ---- reconstructed 13-way view (kept, comparable to models 1 & 2) ----
-            logprobs = reconstruct_13way_logprobs(logit_empty, logits_color, logits_type)  # (batch, 13)
+            logprobs = reconstruct_13way_logprobs(
+                logit_empty, logits_color, logits_type, log_prior=log_prior
+            )  # (batch, 13)
             # Re-derive the 13-way integer label from the decomposed targets (the dataset no
             # longer returns it): empty -> 0; white piece -> type+1; black piece -> type+7.
             label13 = torch.zeros_like(type_target)
@@ -171,7 +184,11 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device)
             model_type="CNN",
             model=model,
             calibration_metadata_path=Path("data/generated") / board_position_data["setup_id"] / "calibration_metadata.json",
-            device=device
+            device=device,
+            # Passed explicitly: BoardEstimator defaults this to True for live inference, but eval
+            # has to mirror whatever the square-level pass above did, or the two levels of the same
+            # scoreboard would describe different decision rules.
+            prior_correction=prior_correction
         )
         board_estimator.estimate_board(squares_dir)
 

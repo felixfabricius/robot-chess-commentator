@@ -191,9 +191,21 @@ class SquareClassifierMultiHead(nn.Module):
 
     The heads are recombined into the original 13-way distribution at inference/eval time via
     reconstruct_13way_logprobs.
+
+    `log_prior` is the 13-way training-set log-prior used for optional Bayesian prior correction
+    (see reconstruct_13way_logprobs). It lives on the model as a buffer rather than being passed
+    around separately so that it travels with the weights: buffers are non-trainable, land in
+    state_dict, and follow .to(device). It is registered UNCONDITIONALLY (all-zeros when unknown,
+    which subtracts nothing) so that state_dict keys never depend on how the model was
+    constructed - registering it only sometimes makes checkpoints fail to load with
+    missing/unexpected-key errors.
     """
-    def __init__(self):
+    def __init__(self, log_prior: torch.Tensor | None = None):
         super().__init__()
+        self.register_buffer(
+            "log_prior",
+            torch.zeros(13) if log_prior is None else log_prior.detach().clone().float(),
+        )
         # Downsample using max pool
         self.max_pool_1 = nn.MaxPool2d(
             kernel_size=2,

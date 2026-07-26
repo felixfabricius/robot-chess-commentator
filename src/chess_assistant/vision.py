@@ -125,7 +125,7 @@ def infer_fen_from_image(image_path: Path, model: str = "claude-opus-4-8", promp
     return message.content[0].text
 
 class BoardEstimator:
-    def __init__(self, model_type: str = "CNN", config: DictConfig | None = None, calibration_metadata_path: Path | None = None, model_weights_path = None, device = None, model = None):
+    def __init__(self, model_type: str = "CNN", config: DictConfig | None = None, calibration_metadata_path: Path | None = None, model_weights_path = None, device = None, model = None, prior_correction: bool = True):
         """
         Build the estimator and hold the board estimate it keeps overwriting, one board
         position per call to estimate_board().
@@ -143,6 +143,12 @@ class BoardEstimator:
             model: an already-constructed model, used instead of model_weights_path. This is
                 how evaluation and the tests hand in a model they have in memory, without a
                 round trip through disk.
+            prior_correction: subtract the model's training log-prior from the 13-way
+                log-probabilities (Bayesian prior correction; see reconstruct_13way_logprobs).
+                CNN only. Defaults to True, which is what live inference wants: the robot should
+                always use the best available decision rule, and the buffer is all-zeros whenever
+                the prior is unknown (legacy checkpoints), where subtracting it is a no-op. Eval
+                passes this explicitly instead, so a run can be scored both ways.
         """
         assert model_type in ["CNN", "LLM"]
         self.board_estimate = BoardEstimate()
@@ -157,7 +163,13 @@ class BoardEstimator:
             if model is None:
                 model = SquareClassifierMultiHead()
                 state_dict = load_file(model_weights_path, device="cpu")
-                model.load_state_dict(state_dict)
+                # strict=False tolerates exactly one thing: weights saved before `log_prior` (the
+                # Bayesian prior-correction buffer) existed, which simply leaves it at all-zeros
+                # = no correction. Everything else is still an error, so a genuinely mismatched
+                # checkpoint cannot slip through silently.
+                missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                assert not unexpected, f"Unexpected keys in {model_weights_path}: {unexpected}"
+                assert set(missing) <= {"log_prior"}, f"Missing keys in {model_weights_path}: {missing}"
             assert device in ["cpu", "cuda", None, torch.device("cpu"), torch.device("cuda")]
             self.device = torch.device(device) if device is not None else torch.device("cpu")
             with open(calibration_metadata_path, "r", encoding="utf-8") as f:
@@ -166,6 +178,9 @@ class BoardEstimator:
             self.top_left_corner = calibration_metadata["camera_natural_orientation"]["order"]["tl"]
             model.eval()
             self.model = model.to(self.device)
+            # Resolved once here rather than per square. getattr keeps this working for any model
+            # handed in that predates the buffer; None means "no correction".
+            self.log_prior = getattr(model, "log_prior", None) if prior_correction else None
         self.model_type = model_type
 
     def estimate_square(self, image_path: Path) -> SquareEstimate:
@@ -252,7 +267,10 @@ class BoardEstimator:
             with torch.no_grad():
                 logit_empty, logits_color, logits_type = self.model(image, metadata)
             logprobs = reconstruct_13way_logprobs(
-                logit_empty.squeeze(0), logits_color.squeeze(0), logits_type.squeeze(0)
+                logit_empty.squeeze(0),
+                logits_color.squeeze(0),
+                logits_type.squeeze(0),
+                log_prior=self.log_prior,
             )
             for label, idx in TARGET_MAP.items():
                 setattr(square_estimate, label, logprobs[idx].item())

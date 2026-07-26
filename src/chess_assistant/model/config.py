@@ -45,11 +45,37 @@ def decompose_label(label: str) -> tuple[float, int, int]:
     return 1.0, color_target, type_target
 
 
-def reconstruct_13way_logprobs(logit_empty, logits_color, logits_type):
+def log_prior_from_label_counts(counts: dict[str, int]) -> torch.Tensor:
+    """Laplace-smoothed 13-way log-prior from a {label: count} mapping over TARGET_MAP labels.
+
+    Add-one smoothing is not cosmetic here: a class absent from the training split (entirely
+    possible once the data-efficiency ablation subsamples down to ~5k rows) would otherwise have
+    count 0 and log-prior -inf, and subtracting -inf sends that class's corrected score to +inf.
+    Leaving the entry at 0.0 instead - the other obvious "fix" - is worse still, since log-prior 0
+    means P(class) == 1. One pseudo-count keeps every entry finite and small.
+    """
+    smoothed = torch.ones(13, dtype=torch.float32)  # one pseudo-count per class
+    for label, count in counts.items():
+        smoothed[TARGET_MAP[label]] += count
+    return torch.log(smoothed / smoothed.sum())
+
+
+def reconstruct_13way_logprobs(logit_empty, logits_color, logits_type, log_prior=None):
     """
     Combine the three heads into log-probabilities over the original 13-way TARGET_MAP
     labels, under a conditional-independence assumption between color and type given
     non-empty. Shape: (..., 13), indexed per TARGET_MAP / INVERSE_TARGET_MAP.
+
+    `log_prior` (optional, shape (13,)) switches on Bayesian prior correction / "logit
+    adjustment": a softmax model trained with cross-entropy approximates
+    log P_train(class | x) = log P(x | class) + log pi_class + const, so subtracting the training
+    log-prior leaves scores proportional to the evidence log P(x | class) alone - i.e. the
+    decision stops inheriting whichever pieces happened to be frequent in training. The result is
+    re-normalised, so the return value is a proper log-probability vector either way.
+
+    Note the correction must cover ALL 13 classes including "empty" (~56% of squares, so by far
+    the largest prior term); removing the prior from the 12 piece classes only would skew the
+    estimate harder than not correcting at all.
 
     Everything stays in log space via logsigmoid / log_softmax, so this is numerically stable
     and needs no epsilon-clamping. The result is a normalised log-probability vector, and since
@@ -73,4 +99,11 @@ def reconstruct_13way_logprobs(logit_empty, logits_color, logits_type):
         color_idx = COLOR_MAP["white"] if label.isupper() else COLOR_MAP["black"]
         type_idx = TYPE_MAP[label.upper()]
         out[..., idx] = log_p_nonempty + log_p_color[..., color_idx] + log_p_type[..., type_idx]
+
+    if log_prior is not None:
+        # Applied to the whole (..., 13) vector at once - including "empty" - then re-normalised
+        # so the contract above ("a normalised log-probability vector") still holds. log_softmax
+        # only shifts by a per-row constant, so argmax / CrossEntropyLoss / game.py's softmax are
+        # unaffected by the re-normalisation itself; the prior subtraction is what moves them.
+        out = F.log_softmax(out - log_prior, dim=-1)
     return out
