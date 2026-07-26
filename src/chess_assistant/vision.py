@@ -34,7 +34,12 @@ import numpy as np
 from omegaconf import OmegaConf, DictConfig
 
 from chess_assistant.config import SQUARES
-from chess_assistant.model.config import TARGET_MAP, reconstruct_13way_logprobs, TOP_LEFT_OHE_MAP
+from chess_assistant.model.config import (
+    TARGET_MAP,
+    reconstruct_13way_logprobs,
+    logprobs13_from_logits,
+    TOP_LEFT_OHE_MAP,
+)
 from chess_assistant.model.data import EVAL_TRANSFORM
 from chess_assistant.model.model import SquareClassifierMultiHead
 
@@ -260,18 +265,23 @@ class BoardEstimator:
                 copied_from=None
             )
 
-            # Multi-head model (model 3): recombine the three heads into 13-way
-            # log-probabilities. softmax(log p) == p and the reconstructed probs sum to
-            # 1, so log p is a drop-in for the old single-head logits under the softmax
-            # game.py re-applies downstream.
+            # Whatever the model, what game.py needs is 13-way log-probabilities. The multi-head
+            # model 3 returns a 3-tuple recombined via reconstruct_13way_logprobs; the single-head
+            # models 1/2 return a single 13-way logit tensor turned into log-probs by
+            # logprobs13_from_logits. Both apply the same optional prior correction (self.log_prior)
+            # and both yield a normalised log-prob vector, a drop-in for the softmax game.py
+            # re-applies downstream.
             with torch.no_grad():
-                logit_empty, logits_color, logits_type = self.model(image, metadata)
-            logprobs = reconstruct_13way_logprobs(
-                logit_empty.squeeze(0),
-                logits_color.squeeze(0),
-                logits_type.squeeze(0),
-                log_prior=self.log_prior,
-            )
+                out = self.model(image, metadata)
+            if isinstance(out, tuple):
+                logprobs = reconstruct_13way_logprobs(
+                    out[0].squeeze(0),
+                    out[1].squeeze(0),
+                    out[2].squeeze(0),
+                    log_prior=self.log_prior,
+                )
+            else:
+                logprobs = logprobs13_from_logits(out.squeeze(0), log_prior=self.log_prior)
             for label, idx in TARGET_MAP.items():
                 setattr(square_estimate, label, logprobs[idx].item())
             return square_estimate

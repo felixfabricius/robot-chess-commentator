@@ -86,9 +86,19 @@ class SquareClassifier2(nn.Module):
     Over the baseline this adds batch normalisation, a residual block, depthwise dilated
     convolutions to widen the receptive field, and 2x2 adaptive max/avg pooling that preserves
     some spatial structure instead of collapsing it entirely.
+
+    `log_prior` is the 13-way training-set log-prior used for optional Bayesian prior correction
+    (see logprobs13_from_logits). It is carried on the model as a buffer exactly as in
+    SquareClassifierMultiHead, so a single-head model 2 checkpoint can be scored with or without the
+    correction just like model 3. It is registered UNCONDITIONALLY (all-zeros when unknown, which
+    subtracts nothing) so that state_dict keys never depend on how the model was constructed.
     """
-    def __init__(self):
+    def __init__(self, log_prior: torch.Tensor | None = None):
         super().__init__()
+        self.register_buffer(
+            "log_prior",
+            torch.zeros(13) if log_prior is None else log_prior.detach().clone().float(),
+        )
         # Downsample using max pool
         self.max_pool_1 = nn.MaxPool2d(
             kernel_size=2,

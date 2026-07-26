@@ -7,11 +7,17 @@ hydra:
     dir: .
   output_subdir: null
 
+# Which square classifier to train:
+#   3 -> SquareClassifierMultiHead, the shipped model (factored empty/color/type heads)
+#   2 -> SquareClassifier2, a single 13-way head (selectable for the model-choice ablation)
+#   1 -> SquareClassifier, the reference baseline (single head, no prior-correction support)
+# Models 1 & 2 share one single-head training/eval path; model 3 has its own multi-head path.
 model: 3
 note: ""
 
-# Combination weights for the three heads of the multi-head model (model 3): the
-# back-propagated train loss and the eval/total diagnostic are
+# Combination weights for the three heads of the multi-head model (model 3); ignored for the
+# single-head models 1 & 2, which have a single 13-way loss. The back-propagated train loss and the
+# eval/total diagnostic (model 3 only) are
 #   loss_weights.empty * empty_loss + loss_weights.color * color_loss + loss_weights.type * type_loss
 loss_weights:
   empty: 1.0

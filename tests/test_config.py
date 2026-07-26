@@ -9,6 +9,8 @@ from chess_assistant.model.config import (
     TARGET_MAP,
     IGNORE_INDEX,
     decompose_label,
+    recompose_label13,
+    logprobs13_from_logits,
     log_prior_from_label_counts,
     reconstruct_13way_logprobs,
 )
@@ -34,6 +36,90 @@ def test_decompose_label_white_piece():
 def test_decompose_label_black_piece():
     # "n" -> black knight: is_piece 1.0, color 1 (black), type 4 (N)
     assert decompose_label("n") == (1.0, 1, 4)
+
+
+### recompose_label13 (tensor-level inverse of decompose_label)
+def test_recompose_label13_is_inverse_of_decompose_label():
+    # Round-trip every 13-way label: decompose to per-head targets, recompose back to the index.
+    for label, idx in TARGET_MAP.items():
+        _is_piece, color_target, type_target = decompose_label(label)
+        got = recompose_label13(
+            torch.tensor([color_target]), torch.tensor([type_target])
+        )
+        assert got.item() == idx, f"{label}: expected {idx}, got {got.item()}"
+
+def test_recompose_label13_empty_is_zero():
+    # An empty square decomposes to IGNORE_INDEX color/type and must recompose to 0.
+    got = recompose_label13(torch.tensor([IGNORE_INDEX]), torch.tensor([IGNORE_INDEX]))
+    assert got.item() == TARGET_MAP["empty"] == 0
+
+def test_recompose_label13_matches_manual_formula():
+    # white -> type+1 ; black -> type+1+6 ; batched, mixing empty and pieces.
+    color = torch.tensor([IGNORE_INDEX, 0, 1, 0])          # empty, white, black, white
+    typ = torch.tensor([IGNORE_INDEX, 5, 0, 2])            # -, P, K, R
+    got = recompose_label13(color, typ)
+    assert got.tolist() == [0, 5 + 1, 0 + 1 + 6, 2 + 1]    # empty, P(6), k(7), R(3)
+
+
+### logprobs13_from_logits (single-head 13-way reconstruction)
+def test_logprobs13_is_normalised():
+    torch.manual_seed(0)
+    logits = torch.randn(5, 13)
+    logprobs = logprobs13_from_logits(logits)
+    assert logprobs.shape == (5, 13)
+    # Already normalised log-probs: exp() sums to 1 (and so does a re-applied softmax).
+    assert torch.allclose(logprobs.exp().sum(dim=-1), torch.ones(5), atol=1e-5)
+    assert torch.allclose(torch.softmax(logprobs, dim=-1).sum(dim=-1), torch.ones(5), atol=1e-5)
+
+def test_logprobs13_no_prior_is_plain_log_softmax():
+    torch.manual_seed(1)
+    logits = torch.randn(4, 13)
+    assert torch.allclose(logprobs13_from_logits(logits), torch.log_softmax(logits, dim=-1), atol=1e-6)
+
+def test_logprobs13_prior_matches_logit_adjustment():
+    # For a single head, correcting by the prior is just log_softmax(logits - log_prior).
+    torch.manual_seed(2)
+    logits = torch.randn(6, 13)
+    log_prior = log_prior_from_label_counts({"empty": 500, "P": 80, "K": 10})
+    expected = torch.log_softmax(logits - log_prior, dim=-1)
+    assert torch.allclose(logprobs13_from_logits(logits, log_prior=log_prior), expected, atol=1e-5)
+
+def test_logprobs13_prior_correction_stays_normalised():
+    torch.manual_seed(3)
+    logits = torch.randn(5, 13)
+    log_prior = log_prior_from_label_counts({"empty": 500, "P": 80, "K": 10})
+    corrected = logprobs13_from_logits(logits, log_prior=log_prior)
+    assert torch.allclose(corrected.exp().sum(dim=-1), torch.ones(5), atol=1e-5)
+
+def test_logprobs13_uniform_prior_is_a_noop():
+    torch.manual_seed(4)
+    logits = torch.randn(4, 13)
+    uniform = torch.full((13,), -torch.tensor(13.0).log())
+    assert torch.allclose(
+        logprobs13_from_logits(logits, log_prior=uniform),
+        logprobs13_from_logits(logits),
+        atol=1e-5,
+    )
+
+def test_logprobs13_zero_prior_is_a_noop():
+    # All-zeros is the model's default buffer value and must leave the decision untouched.
+    torch.manual_seed(5)
+    logits = torch.randn(4, 13)
+    assert torch.allclose(
+        logprobs13_from_logits(logits, log_prior=torch.zeros(13)),
+        logprobs13_from_logits(logits),
+        atol=1e-5,
+    )
+
+def test_logprobs13_is_drop_in_for_cross_entropy():
+    # The log-probs must be usable as logits: CrossEntropyLoss reproduces -log(p_target).
+    torch.manual_seed(6)
+    logits = torch.randn(3, 13)
+    logprobs = logprobs13_from_logits(logits)
+    target = torch.tensor([TARGET_MAP["empty"], TARGET_MAP["K"], TARGET_MAP["n"]])
+    ce = nn.CrossEntropyLoss()(logprobs, target)
+    manual = -torch.log(logprobs.exp()[torch.arange(3), target]).mean()
+    assert torch.allclose(ce, manual, atol=1e-5)
 
 
 ### reconstruct_13way_logprobs

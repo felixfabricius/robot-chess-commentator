@@ -14,40 +14,31 @@ from chess_assistant.model.config import (
     INVERSE_TYPE_MAP,
     IGNORE_INDEX,
     reconstruct_13way_logprobs,
+    logprobs13_from_logits,
+    recompose_label13,
 )
 
 _split_data_cache = {}
 
-def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device, data_root=None,
-             prior_correction=False):
-    """Evaluate the multi-head model on `split` and return a dict of W&B-loggable metrics.
 
-    `data_root` is where the board-level pass looks for each position's square crops and its
-    setup's calibration metadata. It defaults to the directory holding `csv_path`, which is the
-    layout every generated tree has (`<root>/data.csv` next to `<root>/<setup_id>/...`), so
-    pointing a run at a mask-ablation variant needs nothing but its `csv_path`.
+def _confusion_matrix(targets, preds, class_names):
+    # W&B's confusion-matrix chart sorts axis labels alphabetically, ignoring table row
+    # order; zero-padded index prefixes make the alphabetical order coincide with the
+    # intended (TARGET_MAP / COLOR_MAP / TYPE_MAP) order.
+    return wandb.plot.confusion_matrix(
+        y_true=torch.cat(targets).to("cpu").numpy(),
+        preds=torch.cat(preds).to("cpu").numpy(),
+        class_names=class_names,
+    )
 
-    `prior_correction` switches on Bayesian prior correction (subtracting the model's training
-    log-prior; see reconstruct_13way_logprobs). It deliberately drives BOTH levels below - the
-    square-level 13-way view and the board-level move decode - since a half-corrected scoreboard
-    would be meaningless: both levels have to describe the same decision rule. Unlike live
-    inference (which corrects whenever it can), this defaults to off and is set from the config, so
-    one trained checkpoint can be scored both ways without retraining.
 
-    Two levels:
-      - Square level, from the dataloader: per-head losses (empty / color / type) and their
-        confusion matrices, plus the reconstructed 13-way loss, accuracy and confusion matrix.
-        The 13-way view is kept because it is comparable with the single-head models 1 & 2, and it
-        is what drives checkpoint selection.
-      - Board level, from the CSV: see below. Per-square accuracy is only a proxy; what the robot
-        actually needs is to get the MOVE right, so that is measured directly.
+def _square_level_multihead(model, dataloader, loss_fns, loss_weights, device, log_prior):
+    """Square-level metrics for the multi-head model (model 3): per-head losses (empty / color /
+    type) and their confusion matrices, plus the reconstructed 13-way loss, accuracy and confusion
+    matrix. The 13-way view is kept because it is comparable with the single-head models 1 & 2, and
+    it is what drives checkpoint selection.
     """
-    model.eval() # important for batch norm; want to use mean and sd that were accumulated during training
     n = len(dataloader.dataset)
-
-    # None when the correction is off, which is exactly what reconstruct_13way_logprobs expects.
-    # getattr keeps this working for a model handed in that predates the log_prior buffer.
-    log_prior = getattr(model, "log_prior", None) if prior_correction else None
 
     empty_loss_sum = 0.0
     color_loss_sum = 0.0
@@ -94,10 +85,7 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
             logprobs = reconstruct_13way_logprobs(
                 logit_empty, logits_color, logits_type, log_prior=log_prior
             )  # (batch, 13)
-            # Re-derive the 13-way integer label from the decomposed targets (the dataset no
-            # longer returns it): empty -> 0; white piece -> type+1; black piece -> type+7.
-            label13 = torch.zeros_like(type_target)
-            label13[nonempty_mask] = type_target[nonempty_mask] + 1 + color_target[nonempty_mask] * 6
+            label13 = recompose_label13(color_target, type_target)
             square_loss_sum += F.cross_entropy(logprobs, label13).item() * n_batch
             preds13 = logprobs.argmax(dim=-1)
             n_correct_square += (preds13 == label13).sum().item()
@@ -123,28 +111,114 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
     )
     prop_correct = n_correct_square / n
 
-    # W&B's confusion-matrix chart sorts axis labels alphabetically, ignoring table row
-    # order; zero-padded index prefixes make the alphabetical order coincide with the
-    # intended (TARGET_MAP / COLOR_MAP / TYPE_MAP) order.
-    def _confusion_matrix(targets, preds, class_names):
-        return wandb.plot.confusion_matrix(
-            y_true=torch.cat(targets).to("cpu").numpy(),
-            preds=torch.cat(preds).to("cpu").numpy(),
-            class_names=class_names,
-        )
+    return {
+        "eval/square/avg_loss": square_avg,  # reconstructed 13-way CE (drives checkpoint selection)
+        "eval/square/prop_correct_square": prop_correct,
+        "eval/square/confusion_matrix": _confusion_matrix(
+            all_labels13, all_preds13, [f"{i:02d}_{INVERSE_TARGET_MAP[i]}" for i in range(13)]
+        ),
+        "eval/empty/avg_loss": empty_avg,
+        "eval/empty/confusion_matrix": _confusion_matrix(
+            empty_targets, empty_preds, ["00_empty", "01_piece"]
+        ),
+        "eval/color/avg_loss": color_avg,
+        "eval/color/confusion_matrix": _confusion_matrix(
+            color_targets, color_preds, [f"{i:02d}_{INVERSE_COLOR_MAP[i]}" for i in range(2)]
+        ),
+        "eval/type/avg_loss": type_avg,
+        "eval/type/confusion_matrix": _confusion_matrix(
+            type_targets, type_preds, [f"{i:02d}_{INVERSE_TYPE_MAP[i]}" for i in range(6)]
+        ),
+        "eval/total/avg_loss": total_avg,  # weighted combined loss (diagnostic, mirrors train/total)
+    }
 
-    confusion_matrix_plot = _confusion_matrix(
-        all_labels13, all_preds13, [f"{i:02d}_{INVERSE_TARGET_MAP[i]}" for i in range(13)]
-    )
-    empty_confusion_matrix = _confusion_matrix(
-        empty_targets, empty_preds, ["00_empty", "01_piece"]
-    )
-    color_confusion_matrix = _confusion_matrix(
-        color_targets, color_preds, [f"{i:02d}_{INVERSE_COLOR_MAP[i]}" for i in range(2)]
-    )
-    type_confusion_matrix = _confusion_matrix(
-        type_targets, type_preds, [f"{i:02d}_{INVERSE_TYPE_MAP[i]}" for i in range(6)]
-    )
+
+def _square_level_single_head(model, dataloader, device, log_prior):
+    """Square-level metrics for the single-head models (model 1 / model 2), which emit one 13-way
+    logit vector. There are no factored heads to score, so only the 13-way view is produced:
+    the CrossEntropy loss (`eval/square/avg_loss`, the same checkpoint-selection metric the
+    multi-head path reports, so the two are directly comparable), accuracy, and confusion matrix.
+
+    The 13-way loss is F.cross_entropy over the normalised log-probs - identical to how the
+    multi-head path scores its reconstructed distribution - so no separate eval loss object is
+    needed (the eval loss is always unweighted, matching the multi-head reconstructed loss).
+    """
+    n = len(dataloader.dataset)
+
+    square_loss_sum = 0.0
+    n_correct_square = 0
+    all_preds13, all_labels13 = [], []
+
+    for images, metadata, _is_piece, color_target, type_target in dataloader:
+        images = images.to(device, non_blocking=True)
+        metadata = metadata.to(device, non_blocking=True)
+        color_target = color_target.to(device, non_blocking=True)
+        type_target = type_target.to(device, non_blocking=True)
+        n_batch = color_target.shape[0]
+
+        with torch.no_grad():
+            logits = model(images, metadata)
+            # Normalised 13-way log-probs, prior-corrected iff log_prior is not None -- the drop-in
+            # for the multi-head reconstruction, so the CE below is scored on the same footing.
+            logprobs = logprobs13_from_logits(logits, log_prior=log_prior)  # (batch, 13)
+            label13 = recompose_label13(color_target, type_target)
+            square_loss_sum += F.cross_entropy(logprobs, label13).item() * n_batch
+            preds13 = logprobs.argmax(dim=-1)
+            n_correct_square += (preds13 == label13).sum().item()
+
+        all_preds13.append(preds13)
+        all_labels13.append(label13)
+
+    return {
+        "eval/square/avg_loss": square_loss_sum / n,  # 13-way CE (drives checkpoint selection)
+        "eval/square/prop_correct_square": n_correct_square / n,
+        "eval/square/confusion_matrix": _confusion_matrix(
+            all_labels13, all_preds13, [f"{i:02d}_{INVERSE_TARGET_MAP[i]}" for i in range(13)]
+        ),
+    }
+
+
+def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device, data_root=None,
+             prior_correction=False, multi_head=True):
+    """Evaluate the model on `split` and return a dict of W&B-loggable metrics.
+
+    `multi_head` selects the square-level scoring: True for the factored model 3 (per-head losses
+    plus the reconstructed 13-way view), False for the single-head models 1 & 2 (13-way view only).
+    Either way `eval/square/avg_loss` is a 13-way CrossEntropy, so it is comparable across models
+    and drives checkpoint selection identically. For single-head runs the square-level eval loss is
+    an unweighted F.cross_entropy, so `loss_fns`/`loss_weights` are unused (pass None); for
+    multi-head `loss_fns` is the per-head eval dict and `loss_weights` combines them.
+
+    `data_root` is where the board-level pass looks for each position's square crops and its
+    setup's calibration metadata. It defaults to the directory holding `csv_path`, which is the
+    layout every generated tree has (`<root>/data.csv` next to `<root>/<setup_id>/...`), so
+    pointing a run at a mask-ablation variant needs nothing but its `csv_path`.
+
+    `prior_correction` switches on Bayesian prior correction (subtracting the model's training
+    log-prior; see reconstruct_13way_logprobs / logprobs13_from_logits). It deliberately drives BOTH
+    levels below - the square-level 13-way view and the board-level move decode - since a
+    half-corrected scoreboard would be meaningless: both levels have to describe the same decision
+    rule. Unlike live inference (which corrects whenever it can), this defaults to off and is set
+    from the config, so one trained checkpoint can be scored both ways without retraining.
+
+    Two levels:
+      - Square level, from the dataloader: see _square_level_multihead / _square_level_single_head.
+      - Board level, from the CSV: see below. Per-square accuracy is only a proxy; what the robot
+        actually needs is to get the MOVE right, so that is measured directly.
+    """
+    model.eval() # important for batch norm; want to use mean and sd that were accumulated during training
+    n = len(dataloader.dataset)
+
+    # None when the correction is off, which is exactly what the reconstruction expects.
+    # getattr keeps this working for a model handed in that predates the log_prior buffer.
+    log_prior = getattr(model, "log_prior", None) if prior_correction else None
+
+    if multi_head:
+        square_metrics = _square_level_multihead(
+            model, dataloader, loss_fns, loss_weights, device, log_prior
+        )
+    else:
+        square_metrics = _square_level_single_head(model, dataloader, device, log_prior)
 
     ### On board level
     # Per-square accuracy is not the metric that matters: 63 correct squares and one wrong one can
@@ -227,16 +301,7 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
 
     metrics = {
         "eval/square/n": n,
-        "eval/square/avg_loss": square_avg,  # reconstructed 13-way CE (drives checkpoint selection)
-        "eval/square/prop_correct_square": prop_correct,
-        "eval/square/confusion_matrix": confusion_matrix_plot,
-        "eval/empty/avg_loss": empty_avg,
-        "eval/empty/confusion_matrix": empty_confusion_matrix,
-        "eval/color/avg_loss": color_avg,
-        "eval/color/confusion_matrix": color_confusion_matrix,
-        "eval/type/avg_loss": type_avg,
-        "eval/type/confusion_matrix": type_confusion_matrix,
-        "eval/total/avg_loss": total_avg,  # weighted combined loss (diagnostic, mirrors train/total)
+        **square_metrics,
         "eval/board/n_valid": n_valid,
         "eval/board/prop_correct_board": correct_moves / n_valid if n_valid > 0 else None,
         "eval/board/correct_normalised_rank": np.mean(correct_move_normalised_rank) if len(correct_move_normalised_rank) > 0 else None,

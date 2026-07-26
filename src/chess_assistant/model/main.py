@@ -26,11 +26,12 @@ from dotenv import load_dotenv
 
 from chess_assistant.model.model import SquareClassifier, SquareClassifier2, SquareClassifierMultiHead
 from chess_assistant.model.data import create_dataloader
-from chess_assistant.model.train import train
+from chess_assistant.model.train import train, train_single_head
 from chess_assistant.model.evaluate import evaluate
 from chess_assistant.model.config import (
     decompose_label,
     IGNORE_INDEX,
+    INVERSE_TARGET_MAP,
     log_prior_from_label_counts,
 )
 from chess_assistant.image_processing import MASK_VARIANTS
@@ -184,13 +185,16 @@ def main(config: DictConfig):
     log_prior = log_prior_from_label_counts(label_counts)
 
     assert config.model in [1, 2, 3]
-    # Model 3 (SquareClassifierMultiHead) is the actively-developed model and the one the
-    # training pipeline (5-tuple dataset, per-head losses) now targets. 1 and 2 remain as
-    # selectable classes for reference / loading old checkpoints.
+    # Model 3 (SquareClassifierMultiHead) is the shipped model. The training pipeline now supports
+    # BOTH the multi-head model 3 (per-head losses over the 3-tuple output) and the single-head
+    # model 2 (one 13-way CrossEntropy) - see is_multihead below, which forks the loss setup and the
+    # train/eval calls. Model 1 stays reference-only: its constructor takes no log_prior, so it
+    # cannot be scored with prior correction, but it is otherwise a single-head model like model 2.
+    is_multihead = config.model == 3
     if config.model == 1:
         model = SquareClassifier()
     elif config.model == 2:
-        model = SquareClassifier2()
+        model = SquareClassifier2(log_prior=log_prior)
     else:
         model = SquareClassifierMultiHead(log_prior=log_prior)
     model = model.to(device) # model.to(device) is also in place so would be sufficient
@@ -213,59 +217,86 @@ def main(config: DictConfig):
     lr = config.optimizer.lr
     weight_decay = config.optimizer.get("weight_decay", 1e-4)
 
-    # Per-head class weights (inverse-sqrt-frequency), computed from the train split via
-    # decompose_label. Gated on config.data.weighting exactly like the single-head models.
-    if config.data.get("weighting") == "inverse_root":
-        # Counted over the rows the model will actually train on rather than over the whole train
-        # split: with data.subsample active the two differ, and weights derived from the full split
-        # would not match the class balance the model is really shown.
-        counts = train_dataloader.dataset.data["label"].value_counts()
-        n_empty = 0
-        n_piece = 0
-        color_counts = torch.zeros(2, dtype=torch.float32)
-        type_counts = torch.zeros(6, dtype=torch.float32)
-        for row in counts.iter_rows(named=True):
-            is_piece, color_target, type_target = decompose_label(row["label"])
-            if is_piece == 0.0:
-                n_empty += row["count"]
-            else:
-                n_piece += row["count"]
-                color_counts[color_target] += row["count"]
-                type_counts[type_target] += row["count"]
-        # pos_weight for BCEWithLogitsLoss: inverse-sqrt-frequency ratio between the positive
-        # (piece) and negative (empty) classes = (1/sqrt(n_piece)) / (1/sqrt(n_empty)).
-        pos_weight_empty = torch.tensor(
-            np.sqrt(n_empty) / np.sqrt(n_piece), dtype=torch.float32
-        ).to(device)
-        color_weights = (1 / torch.sqrt(color_counts)).to(device)
-        type_weights = (1 / torch.sqrt(type_counts)).to(device)
-        train_loss_fns = {
-            "empty": nn.BCEWithLogitsLoss(pos_weight=pos_weight_empty),
-            "color": nn.CrossEntropyLoss(weight=color_weights, ignore_index=IGNORE_INDEX),
-            "type": nn.CrossEntropyLoss(weight=type_weights, ignore_index=IGNORE_INDEX),
-        }
-    else:
-        train_loss_fns = {
+    # Loss setup forks on the head architecture. The multi-head model 3 wants three per-head losses
+    # combined by loss_weights; the single-head model 2 wants one 13-way CrossEntropy. Both weight
+    # by inverse-sqrt class frequency when config.data.weighting == "inverse_root", counted over the
+    # rows the model will actually train on (so data.subsample is respected), and both eval
+    # unweighted.
+    if is_multihead:
+        # Per-head class weights (inverse-sqrt-frequency), computed from the train split via
+        # decompose_label. Gated on config.data.weighting exactly like the single-head models.
+        if config.data.get("weighting") == "inverse_root":
+            # Counted over the rows the model will actually train on rather than over the whole
+            # train split: with data.subsample active the two differ, and weights derived from the
+            # full split would not match the class balance the model is really shown.
+            counts = train_dataloader.dataset.data["label"].value_counts()
+            n_empty = 0
+            n_piece = 0
+            color_counts = torch.zeros(2, dtype=torch.float32)
+            type_counts = torch.zeros(6, dtype=torch.float32)
+            for row in counts.iter_rows(named=True):
+                is_piece, color_target, type_target = decompose_label(row["label"])
+                if is_piece == 0.0:
+                    n_empty += row["count"]
+                else:
+                    n_piece += row["count"]
+                    color_counts[color_target] += row["count"]
+                    type_counts[type_target] += row["count"]
+            # pos_weight for BCEWithLogitsLoss: inverse-sqrt-frequency ratio between the positive
+            # (piece) and negative (empty) classes = (1/sqrt(n_piece)) / (1/sqrt(n_empty)).
+            pos_weight_empty = torch.tensor(
+                np.sqrt(n_empty) / np.sqrt(n_piece), dtype=torch.float32
+            ).to(device)
+            color_weights = (1 / torch.sqrt(color_counts)).to(device)
+            type_weights = (1 / torch.sqrt(type_counts)).to(device)
+            train_loss_fns = {
+                "empty": nn.BCEWithLogitsLoss(pos_weight=pos_weight_empty),
+                "color": nn.CrossEntropyLoss(weight=color_weights, ignore_index=IGNORE_INDEX),
+                "type": nn.CrossEntropyLoss(weight=type_weights, ignore_index=IGNORE_INDEX),
+            }
+        else:
+            train_loss_fns = {
+                "empty": nn.BCEWithLogitsLoss(),
+                "color": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
+                "type": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
+            }
+
+        # Eval losses are always unweighted (mirrors the old unweighted eval_loss_fn).
+        eval_loss_fns = {
             "empty": nn.BCEWithLogitsLoss(),
             "color": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
             "type": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
         }
+        # Combination weights for the three heads (used for the back-propagated train loss and the
+        # eval/total diagnostic). Sensible defaults if the section is missing from config.
+        loss_weights_cfg = config.get("loss_weights", {})
+        loss_weights = {
+            "empty": loss_weights_cfg.get("empty", 1.0),
+            "color": loss_weights_cfg.get("color", 1.0),
+            "type": loss_weights_cfg.get("type", 1.0),
+        }
+        train_loss_fn = None  # multi-head uses the per-head dict above
+    else:
+        # Single-head model (model 1 / 2): one 13-way CrossEntropyLoss. Eval is an unweighted
+        # F.cross_entropy inside evaluate(), so no eval loss object / loss_weights are needed here.
+        if config.data.get("weighting") == "inverse_root":
+            # Reuses label_counts (already computed for the log-prior, over the trained-on rows).
+            class_counts13 = torch.tensor(
+                [label_counts.get(INVERSE_TARGET_MAP[i], 0) for i in range(13)],
+                dtype=torch.float32,
+            )
+            weights13 = 1.0 / torch.sqrt(class_counts13)
+            # A class absent from a subsampled split has count 0 -> inf weight. It is never indexed
+            # by the loss (no row carries that target), but zero it out so an inf can never leak into
+            # the reduction and NaN the loss.
+            weights13[~torch.isfinite(weights13)] = 0.0
+            train_loss_fn = nn.CrossEntropyLoss(weight=weights13.to(device))
+        else:
+            train_loss_fn = nn.CrossEntropyLoss()
+        train_loss_fns = None
+        eval_loss_fns = None
+        loss_weights = None
 
-    # Eval losses are always unweighted (mirrors the old unweighted eval_loss_fn).
-    eval_loss_fns = {
-        "empty": nn.BCEWithLogitsLoss(),
-        "color": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
-        "type": nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX),
-    }
-    # Combination weights for the three heads (used for the back-propagated train loss and the
-    # eval/total diagnostic). Sensible defaults if the section is missing from config.
-    loss_weights_cfg = config.get("loss_weights", {})
-    loss_weights = {
-        "empty": loss_weights_cfg.get("empty", 1.0),
-        "color": loss_weights_cfg.get("color", 1.0),
-        "type": loss_weights_cfg.get("type", 1.0),
-    }
-    
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
@@ -280,15 +311,25 @@ def main(config: DictConfig):
     )
     for epoch in range(1, epochs + 1):
         print(f"\nEpoch {epoch}\n------------------------------")
-        train_metrics = train(
-            model=model,
-            dataloader=train_dataloader,
-            loss_fns=train_loss_fns,
-            loss_weights=loss_weights,
-            optimizer=optimizer,
-            debug=config.get("debug", False),
-            device=device
-        )
+        if is_multihead:
+            train_metrics = train(
+                model=model,
+                dataloader=train_dataloader,
+                loss_fns=train_loss_fns,
+                loss_weights=loss_weights,
+                optimizer=optimizer,
+                debug=config.get("debug", False),
+                device=device
+            )
+        else:
+            train_metrics = train_single_head(
+                model=model,
+                dataloader=train_dataloader,
+                loss_fn=train_loss_fn,
+                optimizer=optimizer,
+                debug=config.get("debug", False),
+                device=device
+            )
         val_metrics = evaluate(
             model=model,
             dataloader=val_dataloader,
@@ -297,7 +338,8 @@ def main(config: DictConfig):
             split="val",
             csv_path=csv_path,
             device=device,
-            prior_correction=prior_correction
+            prior_correction=prior_correction,
+            multi_head=is_multihead
         )
 
         run.log({"epoch": epoch, "lr": optimizer.param_groups[0]["lr"], **train_metrics, **val_metrics})

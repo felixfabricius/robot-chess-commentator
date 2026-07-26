@@ -45,6 +45,44 @@ def decompose_label(label: str) -> tuple[float, int, int]:
     return 1.0, color_target, type_target
 
 
+def recompose_label13(color_target: torch.Tensor, type_target: torch.Tensor) -> torch.Tensor:
+    """Tensor-level inverse of decompose_label: rebuild the 13-way integer label (indexed per
+    TARGET_MAP) from the per-head color/type targets.
+
+      empty -> 0 ; white piece -> type + 1 ; black piece -> type + 1 + 6
+
+    The non-empty rows are exactly those with color_target != IGNORE_INDEX (decompose_label sets
+    both color and type to IGNORE_INDEX iff empty). Shared by evaluate.py (which needs the 13-way
+    label to score the reconstructed multi-head distribution) and the single-head model 2 path
+    (whose targets are the same decomposed 5-tuple), so the two can never disagree on the encoding.
+    """
+    nonempty = color_target != IGNORE_INDEX
+    label13 = torch.zeros_like(type_target)
+    label13[nonempty] = type_target[nonempty] + 1 + color_target[nonempty] * 6
+    return label13
+
+
+def logprobs13_from_logits(logits, log_prior=None):
+    """Single-head analogue of reconstruct_13way_logprobs: turn a model's raw 13-way logits
+    (shape (..., 13), indexed per TARGET_MAP) into normalised log-probabilities, with the same
+    optional Bayesian prior correction.
+
+    Models 1 & 2 have a single 13-way head, so there is nothing to recombine - a log_softmax is all
+    the reconstruction there is. `log_prior` (shape (13,)) subtracts the training log-prior exactly
+    as in reconstruct_13way_logprobs; for a single head that is just logit adjustment,
+    log_softmax(log_softmax(logits) - log_prior) == log_softmax(logits - log_prior), and the result
+    is re-normalised so the return value is a proper log-probability vector either way.
+
+    The contract matches reconstruct_13way_logprobs exactly (a normalised (..., 13) log-prob
+    vector), so the two are interchangeable everywhere downstream: argmax, nn.CrossEntropyLoss, and
+    the softmax game.py re-applies all give the intended answer.
+    """
+    out = F.log_softmax(logits, dim=-1)
+    if log_prior is not None:
+        out = F.log_softmax(out - log_prior, dim=-1)
+    return out
+
+
 def log_prior_from_label_counts(counts: dict[str, int]) -> torch.Tensor:
     """Laplace-smoothed 13-way log-prior from a {label: count} mapping over TARGET_MAP labels.
 

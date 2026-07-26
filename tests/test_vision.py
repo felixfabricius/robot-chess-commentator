@@ -1,5 +1,5 @@
 from chess_assistant.vision import SquareEstimate, BoardEstimate, BoardEstimator
-from chess_assistant.model.model import SquareClassifierMultiHead
+from chess_assistant.model.model import SquareClassifier2, SquareClassifierMultiHead
 from chess_assistant.model.config import TARGET_MAP
 from omegaconf import OmegaConf
 from pathlib import Path
@@ -40,6 +40,48 @@ def test_estimate_square_returns_valid_logprobs(board_estimator):
     values = torch.tensor([getattr(square_estimate, label) for label in TARGET_MAP])
     assert math.isclose(values.exp().sum().item(), 1.0, abs_tol=1e-4)
     assert math.isclose(torch.softmax(values, dim=-1).sum().item(), 1.0, abs_tol=1e-6)
+
+
+### Single-head model (model 2) path: exercises the isinstance(out, tuple) branch in
+### estimate_square, where the model returns one 13-way logit tensor rather than the 3-tuple.
+@pytest.fixture(scope="module")
+def board_estimator_model2():
+    return BoardEstimator(
+        model_type="CNN",
+        calibration_metadata_path=CALIBRATION_METADATA_PATH,
+        model=SquareClassifier2(),
+    )
+
+def test_estimate_square_model2_returns_valid_logprobs(board_estimator_model2):
+    # For a single-head model the 13 stored values are logprobs13_from_logits(logits): a valid
+    # log-prob distribution, exactly as the multi-head reconstruction is.
+    square_estimate = board_estimator_model2.estimate_square(SQUARE_IMAGE_PATH)
+    assert isinstance(square_estimate, SquareEstimate)
+    values = torch.tensor([getattr(square_estimate, label) for label in TARGET_MAP])
+    assert math.isclose(values.exp().sum().item(), 1.0, abs_tol=1e-4)
+    assert math.isclose(torch.softmax(values, dim=-1).sum().item(), 1.0, abs_tol=1e-6)
+
+def test_estimate_square_model2_prior_correction_shifts_estimate(tmp_path):
+    # The single-head prior correction must actually flow: a strong non-uniform prior changes the
+    # stored log-probs, and the result stays a valid distribution. Same model weights, prior on/off.
+    import json
+
+    metadata_path = tmp_path / "calibration_metadata.json"
+    metadata_path.write_text(
+        json.dumps({"camera_natural_orientation": {"order": {"tl": "a8"}}}), encoding="utf-8"
+    )
+    log_prior = torch.linspace(-5.0, -1.0, 13)
+    model = SquareClassifier2(log_prior=log_prior)
+
+    on = BoardEstimator("CNN", model=model, calibration_metadata_path=metadata_path,
+                        prior_correction=True).estimate_square(SQUARE_IMAGE_PATH)
+    off = BoardEstimator("CNN", model=model, calibration_metadata_path=metadata_path,
+                         prior_correction=False).estimate_square(SQUARE_IMAGE_PATH)
+
+    on_vals = torch.tensor([getattr(on, label) for label in TARGET_MAP])
+    off_vals = torch.tensor([getattr(off, label) for label in TARGET_MAP])
+    assert not torch.allclose(on_vals, off_vals)               # the prior moved the estimate
+    assert math.isclose(on_vals.exp().sum().item(), 1.0, abs_tol=1e-4)  # still a distribution
 
 
 ### The production path: construct exactly as main.py does, from config.yaml.
