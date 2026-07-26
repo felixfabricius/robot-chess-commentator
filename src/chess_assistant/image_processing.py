@@ -177,6 +177,32 @@ def mask_bounding_box(mask_points: np.ndarray, margin: float = 1.05):
     return int(np.floor(x_min)), int(np.floor(y_min)), int(np.ceil(x_max)), int(np.ceil(y_max))
 
 
+# --- Mask / crop ablation knobs -------------------------------------------------------------
+# The 4th channel and the crop geometry are the two things the mask ablation varies. Both default
+# to None everywhere, meaning "follow the calibration": v2 metadata gets the convex-hull mask and
+# the tight per-square crop, v1 falls back to the square mask and the global padding box. Setting
+# them explicitly forces a combination, which is what the ablation runs need (a v2 setup can then
+# be cut the "bad" way on purpose).
+#
+#   mask "hull"   - convex hull of floor + ceiling: the column of space the piece occupies.
+#   mask "square" - only the square's own floor quad (axis-aligned in the rectified warp).
+#   mask "none"   - constant 0. Keeps the 4-channel input shape, but the channel carries no
+#                   information, so it is equivalent to a 3-channel model (a conv over an
+#                   all-zero channel contributes nothing but its bias).
+#   crop "per_square" - tight bounding box of that square's own hull (varies per square).
+#   crop "global"     - the square plus the same global padding box on every side, for all 64.
+MASK_MODES = ("hull", "square", "none")
+CROP_MODES = ("per_square", "global")
+
+# Named ablation variants -> (mask_mode, crop_mode). "default" is what ships.
+MASK_VARIANTS = {
+    "default": ("hull", "per_square"),
+    "square_per_square": ("square", "per_square"),
+    "square_global": ("square", "global"),
+    "none_global": ("none", "global"),
+}
+
+
 def compute_square_mask(mask_polygon: np.ndarray, crop_shape: tuple[int, int]) -> np.ndarray:
     """Hard 0/1 mask in the crop's own local coordinates (polygon already offset to the crop).
 
@@ -200,7 +226,13 @@ class SquareGeometry:
 
 
 class Processor:
-    def __init__(self, metadata_source, config_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        metadata_source,
+        config_path: Path | None = None,
+        mask_mode: str | None = None,
+        crop_mode: str | None = None,
+    ) -> None:
         """Freeze the per-setup geometry: padding, warp matrix, undistort maps, square geometry.
 
         The warped canvas is the board plus padding on each side. The padding is not decorative:
@@ -210,7 +242,17 @@ class Processor:
         ``metadata_source`` is either a path/str to a ``calibration_metadata.json`` file or an
         already-loaded calibration dict. The dict form lets the calibration UI build the same
         geometry from in-progress clicks without touching disk.
+
+        ``mask_mode`` / ``crop_mode`` are the ablation knobs (see MASK_MODES / CROP_MODES). Left
+        at ``None`` they follow the calibration, which is the shipped behaviour; the mask ablation
+        sets them explicitly to cut a v2 setup the deliberately worse way.
         """
+        if mask_mode is not None and mask_mode not in MASK_MODES:
+            raise ValueError(f"mask_mode must be one of {MASK_MODES}. Got {mask_mode!r}.")
+        if crop_mode is not None and crop_mode not in CROP_MODES:
+            raise ValueError(f"crop_mode must be one of {CROP_MODES}. Got {crop_mode!r}.")
+        self.mask_mode = mask_mode
+        self.crop_mode = crop_mode
         # Get board size of transformed image (excl. padding) from config
         board_size = None
         square_cutout_size = None
@@ -394,6 +436,20 @@ class Processor:
             )
             self.square_geometry = self._build_square_geometry()
 
+    @property
+    def effective_mask_mode(self) -> str:
+        """The mask actually used: the explicit override, else what the calibration supports."""
+        if self.mask_mode is not None:
+            return self.mask_mode
+        return "hull" if self.square_geometry is not None else "square"
+
+    @property
+    def effective_crop_mode(self) -> str:
+        """The crop actually used: the explicit override, else what the calibration supports."""
+        if self.crop_mode is not None:
+            return self.crop_mode
+        return "per_square" if self.square_geometry is not None else "global"
+
     def _compute_square_labels(self) -> dict:
         """Map each ``(i, j)`` grid cell (row from top, col from left) to its square label.
 
@@ -497,57 +553,49 @@ class Processor:
         depends on which board corner the camera happens to see in the top left; see
         ``_compute_square_labels`` / ``self.corner_map``.
 
-        Dispatches to ``_cutout_v2`` when the calibration carried the geometry to build real
-        per-square masks. v1 metadata has no such geometry and falls through to the legacy path.
+        Dispatches on ``effective_crop_mode``: the tight per-square hull crop when the
+        calibration carried the geometry to build it (and the ablation has not forced otherwise),
+        else the global padding box. v1 metadata has no geometry, so it always takes the global
+        path.
         """
         warped_image = cv2.imread(warped_image_path)
+        squares_dir = warped_image_path.parent / "squares"
 
-        # v2 calibration: per-square convex-hull mask + tight crop from the precomputed
-        # geometry. v1 metadata (no square_geometry) falls through to the legacy path below.
-        if self.square_geometry is not None:
-            return self._cutout_v2(warped_image, warped_image_path.parent / "squares")
+        if self.effective_crop_mode == "per_square":
+            if self.square_geometry is None:
+                raise ValueError(
+                    "crop_mode='per_square' needs the v2 calibration geometry, which this setup "
+                    "does not have."
+                )
+            return self._cutout_v2(warped_image, squares_dir)
+        return self._cutout_global(warped_image, squares_dir)
 
-        # --- Legacy v1 path: the same fixed global padding around every square, and a hard
-        # axis-aligned rectangle mask. Superseded by _cutout_v2's per-square convex hull, but
-        # kept so setups calibrated before v2 can still be processed. ---
-        # Walk the grid from the top-left square: the outer loop steps i down the rows (adding
-        # one square height to y each time), the inner loop steps j across the columns (adding
-        # one square width to x). (i, j) therefore uniquely identifies a square in the image.
-        # Which board square that *is* depends on the corner the camera sees in the image's top
-        # left — the robot may stand on any side of the board — so all four cases are spelled out
-        # by hand below.
-        files = ["a", "b", "c", "d", "e", "f", "g", "h"]
-        ranks = [str(i) for i in range(1, 9)]
-        label_map = {
-            "a8": [
-                {i: ranks[-(i + 1)] for i in range(8)}, # map from i index to rank of chess square
-                {j: files[j] for j in range(8)} # rank from j index to file of chess square
-            ],
-            "a1": [
-                {i: files[i] for i in range(8)}, # note that in this case i determines the file 
-                {j: ranks[j] for j in range(8)}
-            ],
-            "h1": [
-                {i: ranks[i] for i in range(8)},
-                {j: files[-(j + 1)] for j in range(8)}
-            ],
-            "h8": [
-                {i: files[-(i + 1)] for i in range(8)},
-                {j: ranks[-(j + 1)] for j in range(8)}
-            ],
-        }
-                
-        # Boolean for cases where i determines file rather than rank
-        is_reverse = self.corner_map["tl"] in ["a1", "h8"]
-        label_map = label_map[self.corner_map["tl"]]
+    def _cutout_global(self, warped_image, squares_dir):
+        """Crop every square as the square plus the *same* global padding box on all four sides.
 
+        The original (pre-v2) geometry. Kept both so v1 setups still process and as the "worse
+        padding" arm of the mask ablation: the crop is not steered toward the direction the piece
+        actually leans, so a tall piece can fall outside its own crop. The 4th channel is whatever
+        ``effective_mask_mode`` asks for (by default the square's own footprint).
+
+        Walk the grid from the top-left square: the outer loop steps i down the rows (adding one
+        square height to y each time), the inner loop steps j across the columns (adding one
+        square width to x). (i, j) therefore uniquely identifies a square in the image, and
+        ``self.square_labels`` maps it to a label like "e2" (which depends on the corner the
+        camera happens to see in the top left).
+        """
+        mask_mode = self.effective_mask_mode
+        if mask_mode == "hull" and self.square_geometry is None:
+            raise ValueError(
+                "mask_mode='hull' needs the v2 calibration geometry, which this setup does not "
+                "have."
+            )
         square_size = self.board_size // 8 # board_size is expected to be a multiple of 8
 
         # Top left coordinates of top-left square
         tl_y = self.padding["up"]
         tl_x = self.padding["left"]
 
-        squares_dir = warped_image_path.parent / "squares"
         squares_dir.mkdir(exist_ok=True) # exist_ok=True for debugging purposes
 
         for i in range(8):
@@ -557,10 +605,7 @@ class Processor:
                 left = tl_x + j * square_size - self.padding["left"]
                 right = tl_x + (j + 1) * square_size + self.padding["right"]
 
-                square_label = (
-                    label_map[1][j] + label_map[0][i] if not is_reverse 
-                    else label_map[0][i] + label_map[1][j]
-                )
+                square_label = self.square_labels[(i, j)]
 
                 # Crop by numpy slicing: axis 0 is y, axis 1 is x, axis 2 is colour.
                 square_cutout = warped_image[top:bottom, left:right]
@@ -572,10 +617,18 @@ class Processor:
                 square_top_cutout = self.padding["up"]
                 square_bottom_cutout = self.padding["up"] + square_size
 
-                # Add a fourth channel: 1 over the square, 0 over the surrounding padding, so the
-                # model can tell which part of the crop is the square it is being asked about.
+                # The fourth channel tells the model which part of the crop is the square it is
+                # being asked about. "square" is the original behaviour (1 over the square's own
+                # footprint, 0 over the surrounding padding); the ablation arms weaken it.
                 mask = np.zeros_like(square_cutout[:,:,0])
-                mask[square_top_cutout:square_bottom_cutout, square_left_cutout:square_right_cutout] = 1
+                if mask_mode == "square":
+                    mask[square_top_cutout:square_bottom_cutout, square_left_cutout:square_right_cutout] = 1
+                elif mask_mode == "hull":
+                    mask = compute_square_mask(
+                        self.square_geometry[square_label].mask_polygon - np.array([left, top]),
+                        mask.shape,
+                    )
+                # "none" leaves the channel all-zero, i.e. carrying no information at all.
                 square_cutout_masked = np.concatenate([square_cutout, np.expand_dims(mask, mask.ndim)], axis=2)
 
                 # Corners of the actual board square in the full warped image
@@ -641,20 +694,31 @@ class Processor:
         return squares_dir
 
     def _cutout_v2(self, warped_image, squares_dir):
-        """Per-square crop + hard convex-hull mask from the precomputed square geometry.
+        """Per-square crop + hard mask from the precomputed square geometry.
 
         Each square's crop is the tight bounding box of its own mask polygon (variable size
-        per square); the mask polygon is translated into the crop's local frame before being
-        filled. The letterbox step (unchanged) handles the variably-sized crops.
+        per square); the polygon is translated into the crop's local frame before being filled.
+        The letterbox step (unchanged) handles the variably-sized crops. Which polygon gets
+        filled is ``effective_mask_mode``'s call -- the hull by default, the square's own floor
+        quad or nothing at all for the ablation arms.
         """
         squares_dir.mkdir(exist_ok=True)
+        mask_mode = self.effective_mask_mode
         for label, geom in self.square_geometry.items():
             x_min, y_min, x_max, y_max = geom.bbox
             square_cutout = warped_image[y_min:y_max, x_min:x_max]
 
             offset = np.array([x_min, y_min])
             local_polygon = geom.mask_polygon - offset
-            mask = compute_square_mask(local_polygon, square_cutout.shape[:2])
+            if mask_mode == "hull":
+                mask = compute_square_mask(local_polygon, square_cutout.shape[:2])
+            elif mask_mode == "square":
+                # "Bad" mask: only the square's own floor quad. The warp rectifies the board, so
+                # that quad is an axis-aligned square -- it stops short of the column of space the
+                # piece actually leans into, which is the whole point of the hull.
+                mask = compute_square_mask(geom.floor_pts - offset, square_cutout.shape[:2])
+            else:  # "none": constant channel, carrying no information at all
+                mask = np.zeros(square_cutout.shape[:2], dtype=np.uint8)
             square_cutout_masked = np.concatenate([square_cutout, mask[:, :, None]], axis=2)
             square_cutout_masked = letterbox(
                 square_cutout_masked, (self.square_cutout_size, self.square_cutout_size)

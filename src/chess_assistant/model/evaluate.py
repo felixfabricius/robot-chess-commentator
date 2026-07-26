@@ -18,8 +18,14 @@ from chess_assistant.model.config import (
 
 _split_data_cache = {}
 
-def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device, prior_correction=False):
+def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device, data_root=None,
+             prior_correction=False):
     """Evaluate the multi-head model on `split` and return a dict of W&B-loggable metrics.
+
+    `data_root` is where the board-level pass looks for each position's square crops and its
+    setup's calibration metadata. It defaults to the directory holding `csv_path`, which is the
+    layout every generated tree has (`<root>/data.csv` next to `<root>/<setup_id>/...`), so
+    pointing a run at a mask-ablation variant needs nothing but its `csv_path`.
 
     `prior_correction` switches on Bayesian prior correction (subtracting the model's training
     log-prior; see reconstruct_13way_logprobs). It deliberately drives BOTH levels below - the
@@ -147,6 +153,7 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
     # a position, then ChessGame.estimate_move to rank the legal moves against that estimate - and
     # top-1 MOVE accuracy is scored. Squares can't be shuffled across boards for this, so it reads
     # data.csv directly rather than going through the dataloader.
+    data_root = Path(data_root) if data_root is not None else Path(csv_path).parent
     cache_key = (str(csv_path), split)
     if cache_key not in _split_data_cache:
         _split_data_cache[cache_key] = (
@@ -178,12 +185,12 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
             )
         )
         board_position_data = board_position_data.to_dicts()[0]
-        squares_dir = Path("data/generated") / board_position_data["setup_id"] / board_position_id / "squares"
+        squares_dir = data_root / board_position_data["setup_id"] / board_position_id / "squares"
 
         board_estimator = BoardEstimator(
             model_type="CNN",
             model=model,
-            calibration_metadata_path=Path("data/generated") / board_position_data["setup_id"] / "calibration_metadata.json",
+            calibration_metadata_path=data_root / board_position_data["setup_id"] / "calibration_metadata.json",
             device=device,
             # Passed explicitly: BoardEstimator defaults this to True for live inference, but eval
             # has to mirror whatever the square-level pass above did, or the two levels of the same

@@ -10,6 +10,9 @@ import numpy as np
 import pytest
 
 from chess_assistant.image_processing import (
+    CROP_MODES,
+    MASK_MODES,
+    MASK_VARIANTS,
     Processor,
     QuadrantField,
     bilinear_interp,
@@ -277,3 +280,105 @@ def test_processor_v2_cutout_outputs(tmp_path):
     # Per-square tight crops: different squares have different crop origins (unlike the old
     # fixed global padding, which gave every square an identical origin/size).
     assert len(set(tops.values())) > 1
+
+
+# --------------------------------------------------------------------------------------------
+# Mask / crop ablation variants
+# --------------------------------------------------------------------------------------------
+
+def _cut_with(tmp_path, mask_mode=None, crop_mode=None):
+    """Warp + cut one synthetic frame under the given ablation modes; returns its squares dir."""
+    metadata_path = _write_v2_metadata(tmp_path)
+    work = tmp_path / f"cut_{mask_mode}_{crop_mode}"
+    work.mkdir()
+    processor = Processor(metadata_path, None, mask_mode=mask_mode, crop_mode=crop_mode)
+    frame = np.random.default_rng(2).integers(0, 255, (1080, 1920, 3)).astype(np.uint8)
+    img_path = work / "image.png"
+    cv2.imwrite(str(img_path), frame)
+    return processor.cutout(processor.warp(img_path))
+
+
+def _mask_of(squares_dir, square):
+    return np.load(squares_dir / square / f"{square}_masked.npy")[..., 3]
+
+
+def test_mask_variants_are_well_formed():
+    assert MASK_VARIANTS["default"] == ("hull", "per_square")
+    for mask_mode, crop_mode in MASK_VARIANTS.values():
+        assert mask_mode in MASK_MODES
+        assert crop_mode in CROP_MODES
+
+
+def test_modes_default_to_what_the_calibration_supports(tmp_path):
+    v2 = Processor(_write_v2_metadata(tmp_path), None)
+    assert (v2.effective_mask_mode, v2.effective_crop_mode) == ("hull", "per_square")
+
+    v1 = Processor(
+        {
+            "camera_natural_orientation": {"order": {"tl": "a8", "tr": "h8", "br": "h1", "bl": "a1"}},
+            "actual_corners_px": {"a8": [700, 300], "h8": [1220, 300], "h1": [1500, 800], "a1": [420, 800]},
+            "extended_corners_px": {"a8": [690, 250], "h8": [1230, 250], "h1": [1470, 760], "a1": [440, 760]},
+        },
+        None,
+    )
+    assert (v1.effective_mask_mode, v1.effective_crop_mode) == ("square", "global")
+
+
+def test_processor_rejects_unknown_modes(tmp_path):
+    metadata_path = _write_v2_metadata(tmp_path)
+    with pytest.raises(ValueError, match="mask_mode"):
+        Processor(metadata_path, None, mask_mode="soft")
+    with pytest.raises(ValueError, match="crop_mode"):
+        Processor(metadata_path, None, crop_mode="tight")
+
+
+def test_mask_mode_none_leaves_the_channel_empty(tmp_path):
+    squares_dir = _cut_with(tmp_path, "none", "global")
+    for sq in ["a1", "e4", "h8"]:
+        # Constant channel -> carries no information, so the 4-channel input is equivalent to a
+        # 3-channel one. That is the point of the "no mask at all" arm.
+        assert _mask_of(squares_dir, sq).max() == 0
+
+
+def test_square_mask_is_a_strict_subset_of_the_hull_mask(tmp_path):
+    hull = _cut_with(tmp_path, "hull", "per_square")
+    square = _cut_with(tmp_path, "square", "per_square")
+    for sq in ["a1", "e4", "h8", "d5"]:
+        hull_mask, square_mask = _mask_of(hull, sq), _mask_of(square, sq)
+        assert square_mask.max() == 1
+        assert np.all(square_mask <= hull_mask)     # never covers what the hull does not
+        assert square_mask.sum() < hull_mask.sum()  # stops short of the piece's column of space
+
+
+def test_mask_mode_does_not_change_the_crop(tmp_path):
+    """The crop box comes from the hull bbox regardless of which mask gets filled.
+
+    This is what makes the ablation cheap: at a fixed crop mode every mask arm shares the very
+    same RGB pixels, and only the 4th channel differs.
+    """
+    hull = _cut_with(tmp_path, "hull", "per_square")
+    square = _cut_with(tmp_path, "square", "per_square")
+    for sq in ["a1", "e4", "h8"]:
+        hull_rgb = np.load(hull / sq / f"{sq}_masked.npy")[..., :3]
+        square_rgb = np.load(square / sq / f"{sq}_masked.npy")[..., :3]
+        assert np.array_equal(hull_rgb, square_rgb)
+
+
+def test_crop_mode_global_gives_every_square_the_same_box(tmp_path):
+    """The "worse padding" arm: one padding box for all 64 squares.
+
+    The annotated PNG is the raw (un-letterboxed) crop, so its shape is the crop box.
+    """
+    def crop_shapes(squares_dir):
+        return {
+            d.name: cv2.imread(str(d / f"{d.name}_annotated.png")).shape[:2]
+            for d in squares_dir.iterdir()
+            if d.is_dir()
+        }
+
+    global_shapes = crop_shapes(_cut_with(tmp_path, "square", "global"))
+    per_square_shapes = crop_shapes(_cut_with(tmp_path, "square", "per_square"))
+
+    assert len(global_shapes) == 64 and len(set(global_shapes.values())) == 1
+    # Per-square crops are steered toward where each square's own piece leans, so they vary.
+    assert len(set(per_square_shapes.values())) > 1
