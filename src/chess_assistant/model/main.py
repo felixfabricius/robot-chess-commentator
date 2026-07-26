@@ -33,6 +33,7 @@ from chess_assistant.model.config import (
     IGNORE_INDEX,
     log_prior_from_label_counts,
 )
+from chess_assistant.image_processing import MASK_VARIANTS
 
 load_dotenv() # for api keys
 
@@ -74,6 +75,19 @@ def main(config: DictConfig):
     # eval number means (including the checkpoint-selection loss), so it goes in the run name.
     prior_correction = bool(config.get("inference", {}).get("prior_correction", False))
 
+    # Which mask/padding ablation tree this run reads, inferred from the data root: regenerate.py
+    # writes variant trees as ``<root>_<variant>``, and the mask/crop it was cut with is not
+    # otherwise recoverable from the config (it is baked into the crops). None for the default
+    # (hull, per_square) tree, so ordinary runs stay unannotated. Longest matching suffix wins, so
+    # no variant name that is a suffix of another could be misread.
+    data_root_name = csv_path.parent.name
+    mask_variant = max(
+        (v for v in MASK_VARIANTS if v != "default" and data_root_name.endswith(f"_{v}")),
+        key=len,
+        default=None,
+    )
+    mask_modes = MASK_VARIANTS[mask_variant] if mask_variant is not None else None
+
     if config.data.weighting == "inverse_root" and config.note == "":
         config.note = "Weighting: Inverse Root"
     if prior_correction:
@@ -87,6 +101,9 @@ def main(config: DictConfig):
             f" (target {subsample_info['target_rows']})"
         )
         config.note = f"{config.note} | {subsample_label}" if config.note else subsample_label
+    if mask_variant is not None:
+        mask_label = f"Mask: {mask_variant} (mask={mask_modes[0]}, crop={mask_modes[1]})"
+        config.note = f"{config.note} | {mask_label}" if config.note else mask_label
     if config.get("debug") and not config.get("prefix"):
         # A plain `config.prefix = ...` raises here: the config is in "struct mode", which exists
         # to stop typo'd keys being silently added. force_add is the sanctioned way through.
@@ -104,6 +121,9 @@ def main(config: DictConfig):
         run_tags.append(f"subsample-{subsample_info['target_rows']}")
     if prior_correction:
         run_tags.append("prior-correction")
+    if mask_variant is not None:
+        run_tags.append("mask-ablation")
+        run_tags.append(f"mask-{mask_variant}")
     # The description spells out everything needed to reproduce the arm, one sentence per
     # non-default choice, including anything not recoverable from the config alone (e.g. which
     # setups a subsample kept). None when nothing notable is active, so plain runs stay unadorned.
@@ -120,6 +140,11 @@ def main(config: DictConfig):
             f"from {subsample_info['n_setups']} whole setups "
             f"(target {subsample_info['target_rows']}, seed {subsample_info['seed']}). "
             f"Val/test untouched. Kept setups: {', '.join(subsample_info['setup_ids'])}."
+        )
+    if mask_variant is not None:
+        note_parts.append(
+            f"Mask/padding ablation arm '{mask_variant}' (mask={mask_modes[0]}, "
+            f"crop={mask_modes[1]}), reading crops from {csv_path.parent}."
         )
     run_notes = " ".join(note_parts) if note_parts else None
     run = wandb.init(
