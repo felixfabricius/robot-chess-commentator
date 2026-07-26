@@ -53,6 +53,10 @@ OPT_PITCH_DEG = 26
 
 MOVE_DURATION = 0.25
 
+# How many consecutive empty camera polls in the interactive loop mean the video pipeline is
+# dead rather than merely slow to warm up. At the loop's ~1ms waitKey this is a few seconds.
+NO_FRAME_LIMIT = 300
+
 
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
@@ -205,10 +209,27 @@ def calibrate(
     last_sent_height = height_mm
     last_sent_pitch = pitch_deg
 
+    # A camera whose GStreamer pipeline failed to start returns None forever. Without this guard
+    # the loop below spins silently -- no window is ever shown, so waitKey has nothing to read
+    # keys from and the whole pipeline looks hung. Fail loudly instead. The usual cause is
+    # another process (a notebook kernel holding a `ReachyMini()`, a previous run) still owning
+    # the camera: the daemon's video stream is single-consumer.
+    empty_frames = 0
+
     while True:
         frame = mini.media.get_frame()
 
-        if frame is not None:
+        if frame is None:
+            empty_frames += 1
+            if empty_frames > NO_FRAME_LIMIT:
+                raise RuntimeError(
+                    f"Camera delivered no frame in {NO_FRAME_LIMIT} consecutive polls. "
+                    "The video pipeline is not running -- check for a GStreamer error above, "
+                    "and make sure no other process (notebook kernel, earlier run, dashboard) "
+                    "still holds the camera."
+                )
+        else:
+            empty_frames = 0
             cv2.imshow("Reachy board view", frame)
 
         key = cv2.waitKey(1) & 0xFF
