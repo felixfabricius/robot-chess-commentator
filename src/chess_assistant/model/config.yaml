@@ -19,8 +19,17 @@ loss_weights:
   type: 1.0
 
 data:
-  weighting: inverse_root
+  weighting: inverse_root # options: inverse_root; or anything else -> no inverse_root weighting
   csv_path: data/generated/data.csv
+  # Data-efficiency ablation. Keeps whole setups from the TRAIN split (in a seed-shuffled order)
+  # until the row count lands closest to target_rows; val/test are never touched. null -> use all
+  # of the train split. Because the kept setups are a prefix of one seeded permutation, a smaller
+  # target is always a SUBSET of a larger one, so the points of the ablation are nested:
+  #   uv run python -m chess_assistant.model.main data.subsample.target_rows=5000
+  #   uv run python -m chess_assistant.model.main data.subsample.target_rows=10000
+  subsample:
+    target_rows: null
+    seed: 0
   dataloader:
     num_workers: 3
     # Without this, workers are shut down and restarted after each Epoch.
