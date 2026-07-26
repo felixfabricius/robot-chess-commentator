@@ -1,6 +1,6 @@
 root_data_folder: data
 setup_folder:
-  create_new: True
+  create_new: False
   # Click a dedicated centre piece-top during calibration (new v2 style) instead of
   # interpolating the centre from the four extended corners.
   annotate_center: True
