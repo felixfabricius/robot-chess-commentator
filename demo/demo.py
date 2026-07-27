@@ -70,7 +70,7 @@ def estimate_move(
     )
     board_estimate = board_estimator.estimate_board(squares_dir)
     
-    game = ChessGame(model_type="CNN", fen=previous_fen)
+    game = ChessGame(fen=previous_fen)
     # This is a list of all possible moves, ordered descendibgly by
     # how likely they are to be the one correct move given the previous
     # board position and an image of the current board state.

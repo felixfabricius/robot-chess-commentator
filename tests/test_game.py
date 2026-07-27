@@ -53,7 +53,7 @@ def create_board_estimate(square_occupants: dict[str, str]):
     ]
 )
 def test_move_estimation(move_uci, square_occupants, make_game):
-    game = make_game(model_type="CNN")
+    game = make_game()
     board_estimate = create_board_estimate(square_occupants)
     move_estimate = game.estimate_move(board_estimate)
     assert move_estimate[0]["move"] == move_uci
@@ -61,7 +61,7 @@ def test_move_estimation(move_uci, square_occupants, make_game):
 
 def test_estimate_move_attaches_move_info(make_game):
     """Speaker and main.py both index candidate["move_info"], so estimate_move must emit it."""
-    game = make_game(model_type="CNN")
+    game = make_game()
     candidates = game.estimate_move(create_board_estimate({"e2": "empty", "e4": "P"}))
     top = candidates[0]
     assert top["move"] == "e2e4"

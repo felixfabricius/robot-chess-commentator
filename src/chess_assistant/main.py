@@ -47,7 +47,6 @@ def main(mini) -> None:
     speaker = Speaker(mini, config)
     engine_config = config.get("engine", {})
     game = ChessGame(
-        model_type=config.get("vision", {}).get("model", "CNN"),
         stockfish_path=engine_config.get("stockfish_path"),
         depth=engine_config.get("depth", 16),
     )

@@ -16,7 +16,7 @@ import chess.engine
 import torch
 from torch import nn
 
-from chess_assistant.config import SQUARES, PIECES
+from chess_assistant.config import SQUARES
 from chess_assistant.model.config import TARGET_MAP, INVERSE_TARGET_MAP
 
 
@@ -89,7 +89,6 @@ class ChessGame:
     def __init__(
         self,
         fen: str | None = None,
-        model_type: str = "LLM",
         depth=16,
         stockfish_path: str | None = None,
     ):
@@ -97,10 +96,12 @@ class ChessGame:
         # what evaluation does: it replays recorded board positions one at a time.
         fen = fen if fen is not None else "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         self.board = chess.Board(fen=fen)
-        assert model_type in ["LLM", "CNN"]
-        self.model_type = model_type
-        if self.model_type == "CNN":
-            self.loss_fn = nn.CrossEntropyLoss()
+        # estimate_move() scores candidate moves with cross-entropy against the vision model's
+        # per-square scores. This works for every backend: log-probabilities (CNN, model iii/iv
+        # logits) and hard one-hot readings alike -- CrossEntropyLoss soft-maxes its input, so a
+        # 0/1 one-hot fed in as "logits" is well-defined and ranks moves identically to the old
+        # squared-error path it replaced (see estimate_move).
+        self.loss_fn = nn.CrossEntropyLoss()
         self.depth = depth  # engine search depth for move rating; maybe increase to 18 eventually
         # Stockfish is spawned on first use, not here -- see the engine property. estimate_move()
         # never touches it, so board reading and move ranking run with no engine installed at all.
@@ -156,9 +157,10 @@ class ChessGame:
         Rank every legal move by how well it explains the vision model's board estimate.
 
         For each legal move we ask: if this move was played, how badly would the resulting
-        position disagree with what the model saw? The disagreement is a loss summed over the
-        64 squares -- cross-entropy against the CNN's log-probabilities, or squared error
-        against the LLM's one-hot answers.
+        position disagree with what the model saw? The disagreement is a cross-entropy loss summed
+        over the 64 squares, against whatever per-square scores the vision model produced (CNN
+        log-probabilities, LLM one-hot readings, or LLM per-label scores -- all fed to the same
+        CrossEntropyLoss, which soft-maxes them).
 
         Returns a list of {"move", "loss", "move_info"} dicts sorted by ascending loss, i.e.
         most plausible move first. Never touches the engine.
@@ -172,27 +174,18 @@ class ChessGame:
             square_estimate = getattr(board_estimate, square)
             piece_at_square = self.board.piece_at(chess.parse_square(square))
             piece_at_square = "empty" if piece_at_square is None else piece_at_square.symbol()
-            if self.model_type == "LLM":
-                # Squared error against the LLM's answer: it only ever gives a one-hot, so the
-                # truth-vs-estimate distance is summed over all 13 labels of the square.
-                for piece in PIECES:
-                    if piece == piece_at_square:
-                        initial_loss += (1 - getattr(square_estimate, piece)) ** 2
-                    else:
-                        initial_loss += getattr(square_estimate, piece) ** 2
-            else:
-                # Cross-entropy against the CNN's log-probabilities. The 13 scores have to be
-                # laid out in TARGET_MAP index order, which is what INVERSE_TARGET_MAP is for.
-                initial_loss += self.loss_fn(
-                    torch.tensor(
-                        [
-                            getattr(square_estimate, INVERSE_TARGET_MAP[target])
-                            for target in range(13)
-                        ],
-                        dtype=torch.float32
-                    ),
-                    torch.tensor(TARGET_MAP[piece_at_square])
-                )
+            # Cross-entropy against the vision model's per-square scores. The 13 scores have to be
+            # laid out in TARGET_MAP index order, which is what INVERSE_TARGET_MAP is for.
+            initial_loss += self.loss_fn(
+                torch.tensor(
+                    [
+                        getattr(square_estimate, INVERSE_TARGET_MAP[target])
+                        for target in range(13)
+                    ],
+                    dtype=torch.float32
+                ),
+                torch.tensor(TARGET_MAP[piece_at_square])
+            )
 
         scored_moves = []
         for move in self.board.legal_moves:
@@ -232,30 +225,20 @@ class ChessGame:
             # initial_loss plus a delta over those few squares: drop each changed square's old
             # contribution, add its new one.
             #
-            # For the LLM's squared error that delta collapses into arithmetic. The square used
-            # to hold old_piece and now holds new_piece, so with x = the estimate's score for a
-            # given piece, new_piece goes from a "wrong" term x**2 to a "right" term (1 - x)**2,
-            # i.e. we add (1 - x)**2 - x**2 = -2x + 1; old_piece goes the other way, so we
-            # subtract -2x + 1 for it. Nothing else about the square changed.
-            #
             # CAREFUL: getattr does not support nested attribute access, so the square estimate
             # has to be pulled out first; getattr(board_estimate, f"{square}.{piece}") does not
             # work.
             for square, old_piece, new_piece in changed_squares:
                 square_estimate = getattr(board_estimate, square)
-                if self.model_type == "LLM":
-                    loss_increment += -2 * getattr(square_estimate, new_piece) + 1
-                    loss_increment += 2 * getattr(square_estimate, old_piece) - 1
-                else:
-                    square_pred_tensor = torch.tensor(
-                        [
-                            getattr(square_estimate, INVERSE_TARGET_MAP[target])
-                            for target in range(13)
-                        ],
-                        dtype=torch.float32
-                    ) 
-                    loss_increment += self.loss_fn(square_pred_tensor, torch.tensor(TARGET_MAP[new_piece]))
-                    loss_increment -= self.loss_fn(square_pred_tensor, torch.tensor(TARGET_MAP[old_piece]))
+                square_pred_tensor = torch.tensor(
+                    [
+                        getattr(square_estimate, INVERSE_TARGET_MAP[target])
+                        for target in range(13)
+                    ],
+                    dtype=torch.float32
+                )
+                loss_increment += self.loss_fn(square_pred_tensor, torch.tensor(TARGET_MAP[new_piece]))
+                loss_increment -= self.loss_fn(square_pred_tensor, torch.tensor(TARGET_MAP[old_piece]))
 
             scored_moves.append({
                 "move": move.uci(),

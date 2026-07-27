@@ -30,6 +30,11 @@ experiment_robot.ipynb
 
 # Artifacts
 artifacts
+trained_models
+
+# Evaluation
+*evaluation.ipynb
+*evaluation_results.csv
 
 # demo outputs
 demo/out

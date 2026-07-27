@@ -202,7 +202,7 @@ def evaluate(model, dataloader, loss_fns, loss_weights, split, csv_path, device,
         # estimate_move() ranks legal moves against the board estimate and never consults
         # Stockfish, so no engine is spawned here. The with-block is the guarantee that stays
         # true: if anything below ever does reach for the engine, its process is still reaped.
-        with ChessGame(fen=board_position_data["previous_board_fen"], model_type="CNN") as game:
+        with ChessGame(fen=board_position_data["previous_board_fen"]) as game:
             assert game.board.is_valid() # should not arrive at an invalid position this way
             estimated_moves = game.estimate_move(board_estimator.board_estimate)
 
