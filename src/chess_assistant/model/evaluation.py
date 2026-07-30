@@ -24,6 +24,8 @@ Every method is reduced to the same handful of per-board metrics so results are 
                           top-1 correct_board is cleanly paired across all methods.
   - first_output_illegal: (move/board/fen_whole only) whether the model's FIRST candidate was illegal.
   - none_legal          : (move/board/fen_whole only) whether not one returned candidate was legal.
+  - n_suggested         : (move/board only) how many candidates the model returned (raw, before the
+                          legality filter). None for the square methods and fen_whole.
   - input_tokens / output_tokens / cost / inference_time: per board. Cost is from the API's own
     usage times a per-model price table; time is summed wall-clock (indicative, not exact -- it
     includes network/backoff). Square methods sum these over their 64 calls; the CNN reports local
@@ -48,6 +50,7 @@ from chess_assistant.config import SQUARES, PIECES
 from chess_assistant.game import ChessGame
 from chess_assistant.vision import (
     BoardEstimator,
+    LLMResponseError,
     estimate_board_after_llm,
     estimate_fen_whole_llm,
     estimate_move_llm,
@@ -65,6 +68,7 @@ METRIC_NAMES = (
     "board_rank",
     "first_output_illegal",
     "none_legal",
+    "n_suggested",
     "input_tokens",
     "output_tokens",
     "inference_time",
@@ -74,6 +78,7 @@ METRIC_NAMES = (
 # USD per token (input, output). Cache terms are omitted: every board is a distinct image, so
 # nothing is served from cache during evaluation. Unknown models price at 0 (cost reported as 0).
 PRICING = {
+    "claude-opus-5": (5e-6, 25e-6),
     "claude-opus-4-8": (5e-6, 25e-6),
     "claude-opus-4-7": (5e-6, 25e-6),
     "claude-sonnet-5": (3e-6, 15e-6),
@@ -160,45 +165,62 @@ def _evaluate_board(
         return record
 
     # Whole-image strategies: move (i), board (ii), fen_whole. Each yields an ordered candidate
-    # list that first_legal_and_stats reduces to a prediction + legality flags.
-    if method == "move":
-        result = estimate_move_llm(
-            llm_client, warped_image_path, previous_fen, corner_map,
-            model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-        )
-        stats = first_legal_and_stats(previous_fen, result["moves"], "move")
-    elif method == "board":
-        result = estimate_board_after_llm(
-            llm_client, warped_image_path, previous_fen, corner_map,
-            model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-        )
-        stats = first_legal_and_stats(previous_fen, result["fen_boards"], "board")
-        # Bonus square metric: read it off the model's first returned board, if parseable.
-        if result["fen_boards"]:
-            labels = fen_board_to_labels(result["fen_boards"][0])
+    # list that first_legal_and_stats reduces to a prediction + legality flags. A degenerate or
+    # truncated response (LLMResponseError -- usually the model looping into a max_tokens runaway)
+    # is recorded as a FAILED board rather than crashing the whole run; the wasted call is still
+    # charged, since it cost real tokens.
+    try:
+        if method == "move":
+            result = estimate_move_llm(
+                llm_client, warped_image_path, previous_fen, corner_map,
+                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
+            )
+            candidates, kind = result["moves"], "move"
+            record["n_suggested"] = len(result["moves"])  # candidates the model returned (raw)
+        elif method == "board":
+            result = estimate_board_after_llm(
+                llm_client, warped_image_path, previous_fen, corner_map,
+                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
+            )
+            candidates, kind = result["fen_boards"], "board"
+            record["n_suggested"] = len(result["fen_boards"])  # candidates the model returned (raw)
+            # Bonus square metric: read it off the model's first returned board, if parseable.
+            if result["fen_boards"]:
+                labels = fen_board_to_labels(result["fen_boards"][0])
+                if labels is not None:
+                    record["correct_square"] = _labels_accuracy(labels, true_labels)
+        else:  # fen_whole
+            result = estimate_fen_whole_llm(
+                llm_client, warped_image_path,
+                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
+            )
+            candidates, kind = [result["fen_board"]], "board"
+            labels = fen_board_to_labels(result["fen_board"])
             if labels is not None:
                 record["correct_square"] = _labels_accuracy(labels, true_labels)
-    else:  # fen_whole
-        result = estimate_fen_whole_llm(
-            llm_client, warped_image_path,
-            model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-        )
-        stats = first_legal_and_stats(previous_fen, [result["fen_board"]], "board")
-        labels = fen_board_to_labels(result["fen_board"])
-        if labels is not None:
-            record["correct_square"] = _labels_accuracy(labels, true_labels)
 
-    ordered = stats["ordered_legal"]
-    record["correct_board"] = bool(stats["first_legal"] is not None and stats["first_legal"] == actual_move)
-    record["board_rank"] = _rank(ordered, actual_move, len(ordered))
-    record["first_output_illegal"] = stats["first_output_illegal"]
-    record["none_legal"] = stats["none_legal"]
+        stats = first_legal_and_stats(previous_fen, candidates, kind)
+        record["correct_board"] = bool(stats["first_legal"] is not None and stats["first_legal"] == actual_move)
+        record["board_rank"] = _rank(stats["ordered_legal"], actual_move, len(stats["ordered_legal"]))
+        record["first_output_illegal"] = stats["first_output_illegal"]
+        record["none_legal"] = stats["none_legal"]
+        usage, elapsed = result["usage"], result["elapsed"]
+    except LLMResponseError as exc:
+        # No usable answer for this board: count it as a failed prediction (no legal candidate),
+        # but still charge the wasted call.
+        print(f"  {warped_image_path.parent.name}: unusable response ({exc}) -- recorded as failed board")
+        record["correct_board"] = False
+        record["first_output_illegal"] = True
+        record["none_legal"] = True
+        if method in ("move", "board"):
+            record["n_suggested"] = 0
+        usage, elapsed = exc.usage, exc.elapsed
 
-    usage = result["usage"]
-    record["input_tokens"] = usage.input_tokens
-    record["output_tokens"] = usage.output_tokens
-    record["cost"] = _cost(usage.input_tokens, usage.output_tokens, model_version)
-    record["inference_time"] = result["elapsed"]
+    if usage is not None:
+        record["input_tokens"] = usage.input_tokens
+        record["output_tokens"] = usage.output_tokens
+        record["cost"] = _cost(usage.input_tokens, usage.output_tokens, model_version)
+    record["inference_time"] = elapsed
     return record
 
 
@@ -273,13 +295,13 @@ def main(
     resume: bool = True,
     max_setups: int | None = None,
     data_path: Path = Path("data/generated/data.csv"),
-    output_path: Path = Path("evaluation_results.csv"),
+    output_path: Path = Path("evaluation/results.csv"),
 ):
     """Evaluate one `method` over the chosen splits and append per-(split, setup) rows to
     `output_path`. Returns the DataFrame written to disk.
 
     `model_version` labels the run in the output. It doubles as the version identifier for BOTH
-    families: a Claude model id for the VLM methods (default "claude-opus-4-8"), or an identifier
+    families: a Claude model id for the VLM methods (default "claude-sonnet-5"), or an identifier
     for the trained CNN (there are several -- different masks/crops/data amounts). For "cnn" it
     defaults to the weights path so each checkpoint is distinguishable; pass a friendlier label to
     override.
@@ -307,7 +329,7 @@ def main(
         assert model_weights_path is not None, "method='cnn' needs model_weights_path"
         model_version = model_version or Path(model_weights_path).as_posix()
     else:
-        model_version = model_version or "claude-opus-4-8"
+        model_version = model_version or "claude-sonnet-5"
 
     data = pl.read_csv(data_path).filter(
         # Only positions that are a real game move: a free-placement edit (valid_game_position
@@ -477,7 +499,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-version",
         default=None,
-        help="Run label. VLM: Claude model id (default claude-opus-4-8). CNN: an identifier for "
+        help="Run label. VLM: Claude model id (default claude-sonnet-5). CNN: an identifier for "
         "the checkpoint (defaults to the weights path).",
     )
     parser.add_argument("--prompt-version", type=int, default=1, help="Prompt version (LLM methods).")
@@ -505,7 +527,7 @@ if __name__ == "__main__":
         help="Cap the number of not-yet-done setups generated this run (re-run to do more).",
     )
     parser.add_argument("--data-path", type=Path, default=Path("data/generated/data.csv"))
-    parser.add_argument("--output-path", type=Path, default=Path("evaluation_results.csv"))
+    parser.add_argument("--output-path", type=Path, default=Path("evaluation/results.csv"))
     args = parser.parse_args()
 
     main(

@@ -54,6 +54,21 @@ from chess_assistant.model.model import SquareClassifierMultiHead
 
 load_dotenv()
 
+
+class LLMResponseError(RuntimeError):
+    """A Claude call returned nothing usable -- no text block (the structured JSON never completed,
+    almost always because generation hit the max_tokens cap or was a refusal) or a text block that
+    doesn't parse as JSON. Carries the response's stop_reason / usage / elapsed so the caller can
+    still record what the (wasted) call cost and treat the board as a failed prediction rather than
+    crashing the run."""
+
+    def __init__(self, message, *, stop_reason=None, usage=None, elapsed=None):
+        super().__init__(message)
+        self.stop_reason = stop_reason
+        self.usage = usage
+        self.elapsed = elapsed
+
+
 # Prompts are keyed by method then version, so each strategy can be tuned independently and a
 # `prompt_version` recorded alongside its results. The `{...}` placeholders are filled per board
 # by the move/board strategies (previous position + image orientation); the square prompts need no
@@ -79,14 +94,17 @@ _SQUARE_TASK_PREAMBLE = (
 
 PROMPTS = {
     "fen_whole": {
-        0: (
-            "You are looking at a physical chess board."
-            "Return only the board position as a FEN board string, "
-            "not the full FEN. Example format (if in starting position): "
+        1: (
+            "You are looking at a top-down (rectified) photo of a physical chess board.\n"
+            "{orientation}\n"
+            "Return only the board position as a FEN board string (piece placement only, not the full "
+            "FEN), in STANDARD orientation with a8 at the top-left -- use the orientation note above to "
+            "map the photo's corners to real squares. Example format (starting position): "
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR. "
-            "Do not include side to move, castling rights, move counters, or explanation."
-            "CAREFULLY inspect each of the 64 squares individually to identify which piece - if any - "
-            "is located there."
+            "Do not include side to move, castling rights, move counters, or explanation. "
+            "Inspect each of the 64 squares to identify which piece - if any - is on it. "
+            "Output EXACTLY one FEN board string: exactly 8 rank groups separated by '/', at most 71 "
+            "characters. Do not repeat rank groups or characters, and stop immediately after the 8th rank."
         ),
     },
     "square_label": {
@@ -115,10 +133,11 @@ PROMPTS = {
             "{fen_board}\n"
             "{ascii_board}\n"
             "{orientation}\n"
-            "Identify the single legal move that was played. Return an ordered list of candidate moves "
-            "in UCI notation (e.g. 'e2e4', or 'e7e8q' for a promotion), your best guess first. "
-            "If you are not certain your first guess is correct, append additional plausible moves in "
-            "decreasing order of likelihood; return as many as you need."
+            "Identify the single legal move that was played. Put your single best guess in `move_1` as a "
+            "UCI move (e.g. 'e2e4', or 'e7e8q' for a promotion). If -- and only if -- you are genuinely "
+            "uncertain, put distinct alternatives in `move_2`, `move_3`, ... (most likely first); leave the "
+            "remaining slots unset. Never repeat a move and never pad the slots -- typically just move_1, "
+            "rarely more than three. Fill move_1 even if you are unsure."
         ),
     },
     "board": {
@@ -129,11 +148,12 @@ PROMPTS = {
             "{fen_board}\n"
             "{ascii_board}\n"
             "{orientation}\n"
-            "Report the position AFTER the move. Return an ordered list of candidate positions, each as a "
-            "piece-placement FEN string in standard orientation (a8 top-left), e.g. "
-            "'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR', your best guess first. "
-            "If you are not certain your first guess is correct, append additional plausible positions in "
-            "decreasing order of likelihood; return as many as you need."
+            "Report the position AFTER the move. Put your single best guess in `board_1` as a piece-placement "
+            "FEN in standard orientation (a8 top-left, exactly 8 rank groups separated by '/'), e.g. "
+            "'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR'. If -- and only if -- you are genuinely uncertain, "
+            "put distinct alternatives in `board_2`, `board_3`, ... (most likely first); leave the remaining "
+            "slots unset. Never repeat a position and never pad the slots -- typically just board_1, rarely "
+            "more than three. Fill board_1 even if you are unsure."
         ),
     },
 }
@@ -161,18 +181,37 @@ _SQUARE_LOGITS_SCHEMA = {
     "required": ["scores"],
     "additionalProperties": False,
 }
-_MOVE_SCHEMA = {
-    "type": "object",
-    "properties": {"moves": {"type": "array", "items": {"type": "string"}}},
-    "required": ["moves"],
-    "additionalProperties": False,
-}
-_BOARD_SCHEMA = {
-    "type": "object",
-    "properties": {"fen_boards": {"type": "array", "items": {"type": "string"}}},
-    "required": ["fen_boards"],
-    "additionalProperties": False,
-}
+
+# Move/board candidates use a FIXED set of named slots rather than an unbounded array. json_schema
+# structured outputs can't cap an array's length, and an open array is where the model runs away
+# (it keeps emitting elements -- usually repeats -- until it hits max_tokens and the object never
+# closes). Bounding the slots means even a degenerate/repetitive model emits a short, COMPLETE
+# object; downstream dedup (first_legal_and_stats) collapses any repeats. Only the first slot is
+# required; the rest are optional and read in order.
+_MAX_CANDIDATES = 8
+
+
+def _ordered_slots_schema(prefix: str) -> dict:
+    return {
+        "type": "object",
+        "properties": {f"{prefix}_{i}": {"type": "string"} for i in range(1, _MAX_CANDIDATES + 1)},
+        "required": [f"{prefix}_1"],
+        "additionalProperties": False,
+    }
+
+
+def _collect_slots(parsed: dict, prefix: str) -> list[str]:
+    """Ordered, non-empty values from prefix_1..N (the model fills as many slots as it has guesses)."""
+    values = []
+    for i in range(1, _MAX_CANDIDATES + 1):
+        value = parsed.get(f"{prefix}_{i}")
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    return values
+
+
+_MOVE_SCHEMA = _ordered_slots_schema("move")
+_BOARD_SCHEMA = _ordered_slots_schema("board")
 _FEN_WHOLE_SCHEMA = {
     "type": "object",
     "properties": {"fen_board": {"type": "string"}},
@@ -247,10 +286,13 @@ def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="n
 
     `parsed` is the JSON object matching `answer_schema` (plus a `reasoning` key when
     reasoning == "text"). `usage` is the response's token usage (for cost); `elapsed` is wall-clock
-    seconds for this single call (for timing). `reasoning`:
-      - "none":     answer only.
-      - "text":     a visible `reasoning` field is added to the schema and filled before the answer.
-      - "thinking": adaptive thinking (hidden), with the same structured final answer.
+    seconds for this single call (for timing). `reasoning` also raises the output budget so the
+    reasoning tokens don't crowd out the answer:
+      - "none":     answer only; uses `max_tokens` as given.
+      - "text":     a visible `reasoning` field is added to the schema and filled before the answer;
+                    `max_tokens` is floored at 4096.
+      - "thinking": adaptive thinking (hidden), same structured final answer; `max_tokens` is
+                    floored at 8192 and the call is streamed.
     """
     assert reasoning in ("none", "text", "thinking")
     schema = _with_reasoning_field(answer_schema) if reasoning == "text" else answer_schema
@@ -261,14 +303,28 @@ def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="n
     messages = [{"role": "user", "content": content}]
     output_config = {"format": {"type": "json_schema", "schema": schema}}
 
+    # Hidden thinking is controlled EXPLICITLY, never left to the model default: some models (e.g.
+    # Sonnet 5) run adaptive thinking whenever `thinking` is omitted, and that thinking shares the
+    # max_tokens budget -- so an omitted param silently burns the whole budget on thinking and the
+    # answer never lands (stop_reason=max_tokens, thinking_tokens ~= max_tokens). Only reasoning
+    # == "thinking" enables it; "none"/"text" disable it so the answer is produced immediately.
+    thinking = {"type": "adaptive"} if reasoning == "thinking" else {"type": "disabled"}
+
+    # Reasoning shares the output budget with the answer, so scale max_tokens up for those modes
+    # (the answer itself is tiny). Thinking needs the most; a visible `reasoning` field needs a
+    # middle floor so a longer scratchpad isn't truncated. "none" uses the caller's cap unchanged.
+    if reasoning == "thinking":
+        max_tokens = max(max_tokens, 8192)
+    elif reasoning == "text":
+        max_tokens = max(max_tokens, 4096)
+
     start = time.monotonic()
     if reasoning == "thinking":
-        # Thinking tokens count against max_tokens, so give generous headroom and stream to avoid
-        # the SDK's non-streaming timeout guard at large max_tokens.
+        # Stream to avoid the SDK's non-streaming timeout guard at large max_tokens.
         with client.messages.stream(
             model=model,
-            max_tokens=max(max_tokens, 8192),
-            thinking={"type": "adaptive"},
+            max_tokens=max_tokens,
+            thinking=thinking,
             output_config=output_config,
             messages=messages,
         ) as stream:
@@ -277,17 +333,37 @@ def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="n
         message = client.messages.create(
             model=model,
             max_tokens=max_tokens,
+            thinking=thinking,
             output_config=output_config,
             messages=messages,
         )
     elapsed = time.monotonic() - start
 
-    # output_config json_schema guarantees the first text block is JSON valid against the schema.
-    text = next(block.text for block in message.content if block.type == "text")
-    return json.loads(text), message.usage, elapsed
+    # With structured output the JSON arrives in a text block. If there is none, the object never
+    # completed -- almost always the response hit the max_tokens cap (constrained decoding was
+    # truncated mid-object, often because the model degenerated into runaway output) or was a
+    # safety refusal. Raise a typed error carrying usage/elapsed so the caller can record the
+    # (wasted) cost and treat the board as a failed prediction rather than crashing.
+    text_block = next((block for block in message.content if block.type == "text"), None)
+    if text_block is None:
+        raise LLMResponseError(
+            f"no text block to parse (stop_reason={message.stop_reason!r}, "
+            f"output_tokens={message.usage.output_tokens}, max_tokens={max_tokens})",
+            stop_reason=message.stop_reason, usage=message.usage, elapsed=elapsed,
+        )
+    try:
+        parsed = json.loads(text_block.text)
+    except json.JSONDecodeError as exc:
+        # A present-but-truncated/invalid text block (e.g. max_tokens hit part-way through an
+        # unconstrained-looking response) -- same "unusable answer" outcome.
+        raise LLMResponseError(
+            f"text block is not valid JSON (stop_reason={message.stop_reason!r}): {exc}",
+            stop_reason=message.stop_reason, usage=message.usage, elapsed=elapsed,
+        ) from exc
+    return parsed, message.usage, elapsed
 
 
-def infer_fen_from_image(image_path: Path, model: str = "claude-opus-4-8", prompt_version: int = 0) -> str:
+def infer_fen_from_image(image_path: Path, model: str = "claude-sonnet-5", prompt_version: int = 1) -> str:
     client = anthropic.Anthropic()
 
     prompt = PROMPTS["fen_whole"][prompt_version]
@@ -428,17 +504,18 @@ def _previous_position_prompt(prompt_template: str, previous_fen: str, corner_ma
 
 
 def estimate_move_llm(client, warped_image_path, previous_fen, corner_map,
-                      model="claude-opus-4-8", prompt_version=1, reasoning="none", max_tokens=2048):
+                      model="claude-sonnet-5", prompt_version=1, reasoning="none", max_tokens=1024):
     """Method i: given the position before the move and the warped image after, return an ordered
     list of candidate moves (UCI), best guess first. Pair with first_legal_and_stats(kind="move")
-    to get the prediction and legality stats."""
+    to get the prediction and legality stats. Output is bounded (fixed move_1..move_N slots), so a
+    default max_tokens of 1024 is ample."""
     prompt = _previous_position_prompt(PROMPTS["move"][prompt_version], previous_fen, corner_map)
     parsed, usage, elapsed = _call_claude(
         client, model, [warped_image_path], prompt, _MOVE_SCHEMA,
         reasoning=reasoning, max_tokens=max_tokens,
     )
     return {
-        "moves": [str(m).strip() for m in parsed.get("moves", [])],
+        "moves": _collect_slots(parsed, "move"),
         "reasoning": parsed.get("reasoning"),
         "usage": usage,
         "elapsed": elapsed,
@@ -446,30 +523,33 @@ def estimate_move_llm(client, warped_image_path, previous_fen, corner_map,
 
 
 def estimate_board_after_llm(client, warped_image_path, previous_fen, corner_map,
-                             model="claude-opus-4-8", prompt_version=1, reasoning="none", max_tokens=2048):
+                             model="claude-sonnet-5", prompt_version=1, reasoning="none", max_tokens=1024):
     """Method ii: given the position before the move and the warped image after, return an ordered
     list of candidate positions after the move (FEN board strings), best guess first. Pair with
-    first_legal_and_stats(kind="board")."""
+    first_legal_and_stats(kind="board"). Output is bounded (fixed board_1..board_N slots)."""
     prompt = _previous_position_prompt(PROMPTS["board"][prompt_version], previous_fen, corner_map)
     parsed, usage, elapsed = _call_claude(
         client, model, [warped_image_path], prompt, _BOARD_SCHEMA,
         reasoning=reasoning, max_tokens=max_tokens,
     )
     return {
-        "fen_boards": [str(b).strip() for b in parsed.get("fen_boards", [])],
+        "fen_boards": _collect_slots(parsed, "board"),
         "reasoning": parsed.get("reasoning"),
         "usage": usage,
         "elapsed": elapsed,
     }
 
 
-def estimate_fen_whole_llm(client, image_path, model="claude-opus-4-8", prompt_version=0,
+def estimate_fen_whole_llm(client, image_path, corner_map, model="claude-sonnet-5", prompt_version=1,
                            reasoning="none", max_tokens=1024):
     """The crude whole-board baseline: one call reading the entire board straight to a FEN board
     string (no previous position). Structured-output twin of `infer_fen_from_image`, but reporting
-    token usage and timing so it can be compared on cost like the other strategies."""
+    token usage and timing so it can be compared on cost like the other strategies. `corner_map`
+    (the setup's camera_natural_orientation order) tells the model which real square sits at each
+    photo corner, so it can emit the FEN in canonical a8-top-left orientation."""
+    prompt = PROMPTS["fen_whole"][prompt_version].format(orientation=_orientation_sentence(corner_map))
     parsed, usage, elapsed = _call_claude(
-        client, model, [image_path], PROMPTS["fen_whole"][prompt_version], _FEN_WHOLE_SCHEMA,
+        client, model, [image_path], prompt, _FEN_WHOLE_SCHEMA,
         reasoning=reasoning, max_tokens=max_tokens,
     )
     return {
@@ -519,7 +599,7 @@ class BoardEstimator:
         if model_type == "LLM":
             assert llm_method in ("square_label", "square_logits")
             cfg_vision = config.vision if config is not None else {}
-            self.model_version = model_version or cfg_vision.get("model_version", "claude-opus-4-8")
+            self.model_version = model_version or cfg_vision.get("model_version", "claude-sonnet-5")
             self.prompt_version = prompt_version if prompt_version is not None else cfg_vision.get("prompt_version", 1)
             self.llm_method = llm_method
             self.reasoning = reasoning
