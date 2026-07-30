@@ -4,7 +4,7 @@ append the per-board metrics to a CSV, so the CNN can be compared against the st
 approaches.
 
 Methods (one per run, selected by `method`):
-  - "cnn"           : the trained SquareClassifierMultiHead (needs model_weights_path).
+  - "cnn"           : the trained SquareClassifierMultiHead (needs model_weights_path). Runs locally.
   - "square_label"  : Claude, one call per square, hard label (method iii).
   - "square_logits" : Claude, one call per square, score per label (method iv).
   - "move"          : Claude, one call per board, ordered candidate moves from prev-FEN + after-image (method i).
@@ -27,9 +27,24 @@ Every method is reduced to the same handful of per-board metrics so results are 
   - n_suggested         : (move/board only) how many candidates the model returned (raw, before the
                           legality filter). None for the square methods and fen_whole.
   - input_tokens / output_tokens / cost / inference_time: per board. Cost is from the API's own
-    usage times a per-model price table; time is summed wall-clock (indicative, not exact -- it
-    includes network/backoff). Square methods sum these over their 64 calls; the CNN reports local
-    compute time with zero token cost.
+    usage times a per-model price table, HALVED for the VLM methods because they run through the
+    Message Batches API (50% discount). Square methods sum tokens/cost over their 64 calls. The CNN
+    reports local compute time with zero token cost; the batched VLM methods leave inference_time
+    None -- a batched call has no meaningful per-board wall-clock (see the batch flow below).
+
+How the VLM methods run -- the Message Batches API:
+    The VLM methods make many billed Claude calls, so instead of calling synchronously the harness
+    builds every request up front and submits them to the Message Batches API (50% cheaper, and the
+    server handles rate-limiting). A batch runs server-side and is durable: it keeps going even if
+    this process dies. A run therefore has two phases -- submit, then (once the batch has finished)
+    collect + score -- and is fully resumable:
+      - The batch ids for each (config, split, setup) are written to a sidecar JSON next to the
+        output CSV (`<output>.batches.json`) the instant a batch is created, so a crash or a
+        deliberate `--no-wait` never loses -- or re-submits (re-pays for) -- work already running.
+      - `main()` is idempotent: each run submits any not-yet-submitted setups, then (unless
+        `--no-wait`) polls until they finish and collects them. A setup is "done" once its row is in
+        the CSV; re-run any time to continue.
+      - `--no-wait` submits and exits (for big overnight batches); a later re-run collects.
 
 Output layout (no CIs -- those are computed downstream): one row per (run, split, setup). Each row
 carries run-identifier columns (method, model_version, prompt_version, reasoning, prior_correction,
@@ -49,17 +64,25 @@ from tqdm import tqdm
 from chess_assistant.config import SQUARES, PIECES
 from chess_assistant.game import ChessGame
 from chess_assistant.vision import (
+    BoardEstimate,
     BoardEstimator,
     LLMResponseError,
-    estimate_board_after_llm,
-    estimate_fen_whole_llm,
-    estimate_move_llm,
+    SquareEstimate,
+    build_board_params,
+    build_fen_whole_params,
+    build_move_params,
+    build_square_params,
     fen_board_to_labels,
     first_legal_and_stats,
+    parse_message,
+    parsed_to_square_estimate,
+    _collect_slots,
 )
 
 METHODS = ("cnn", "square_label", "square_logits", "move", "board", "fen_whole")
 SQUARE_METHODS = ("cnn", "square_label", "square_logits")
+# Everything except the CNN goes through the Message Batches API.
+BATCH_METHODS = ("square_label", "square_logits", "move", "board", "fen_whole")
 
 # The per-board metrics stored as (list-across-boards, setup-mean) pairs.
 METRIC_NAMES = (
@@ -85,10 +108,16 @@ PRICING = {
     "claude-haiku-4-5": (1e-6, 5e-6),
 }
 
+# The API's per-batch ceilings are 100k requests / 256MB; inline base64 images dominate size, so a
+# large square-method setup (64 calls x many boards) is split across several batches to stay clear.
+_MAX_REQUESTS_PER_BATCH = 1000
+_MAX_BYTES_PER_BATCH = 200 * 1024 * 1024
 
-def _cost(input_tokens: int, output_tokens: int, model: str) -> float:
+
+def _cost(input_tokens: int, output_tokens: int, model: str, batch: bool = False) -> float:
     price_in, price_out = PRICING.get(model, (0.0, 0.0))
-    return input_tokens * price_in + output_tokens * price_out
+    cost = input_tokens * price_in + output_tokens * price_out
+    return cost * 0.5 if batch else cost  # Message Batches API is 50% off
 
 
 def _square_accuracy(board_estimate, true_labels: dict[str, str]) -> float:
@@ -117,110 +146,117 @@ def _rank(ordered_moves: list[str], actual_move: str, n: int) -> float | None:
     return 1 - position / (n - 1)
 
 
-def _evaluate_board(
-    method,
-    *,
-    cnn_estimator,
-    llm_square_estimator,
-    llm_client,
-    model_version,
-    prompt_version,
-    reasoning,
-    previous_fen,
-    actual_move,
-    true_labels,
-    squares_dir,
-    warped_image_path,
-    corner_map,
-):
-    """Run one method on one board position and return a record keyed by METRIC_NAMES."""
+# --- Scoring (pure): turn a board estimate / parsed answer into a metrics record ------------------
+# Scoring is separated from making the call, because the batch path scores responses that were
+# produced minutes-to-hours earlier. Each function fills only the accuracy metrics; the caller adds
+# the token/cost/time columns (which differ between the local CNN and the batched VLM methods).
+
+def _score_square_board(board_estimate, previous_fen, actual_move, true_labels) -> dict:
+    """Score a fully-populated BoardEstimate (the square methods and the CNN) into a record: square
+    accuracy plus game.estimate_move's move ranking."""
     record = {name: None for name in METRIC_NAMES}
+    record["correct_square"] = _square_accuracy(board_estimate, true_labels)
+    with ChessGame(fen=previous_fen) as game:
+        estimated_moves = game.estimate_move(board_estimate)
+    ordered = [candidate["move"] for candidate in estimated_moves]
+    n = len(estimated_moves)
+    record["correct_board"] = bool(ordered and ordered[0] == actual_move)
+    record["board_rank"] = _rank(ordered, actual_move, n)
+    # first_output_illegal / none_legal stay None: these methods only ever rank legal moves.
+    return record
 
-    if method in SQUARE_METHODS:
-        estimator = cnn_estimator if method == "cnn" else llm_square_estimator
-        start = time.monotonic()
-        board_estimate = estimator.estimate_board(squares_dir)
-        elapsed = time.monotonic() - start
 
-        record["correct_square"] = _square_accuracy(board_estimate, true_labels)
-
-        with ChessGame(fen=previous_fen) as game:
-            estimated_moves = game.estimate_move(board_estimate)
-        ordered = [candidate["move"] for candidate in estimated_moves]
-        n = len(estimated_moves)
-        record["correct_board"] = bool(ordered and ordered[0] == actual_move)
-        record["board_rank"] = _rank(ordered, actual_move, n)
-        # first_output_illegal / none_legal stay None: these methods only ever rank legal moves.
-
-        if method == "cnn":
-            record["input_tokens"] = 0
-            record["output_tokens"] = 0
-            record["cost"] = 0.0
-            record["inference_time"] = elapsed  # local compute; no API cost
-        else:
-            record["input_tokens"] = estimator.board_input_tokens
-            record["output_tokens"] = estimator.board_output_tokens
-            record["inference_time"] = estimator.board_elapsed
-            record["cost"] = _cost(estimator.board_input_tokens, estimator.board_output_tokens, model_version)
-        return record
-
-    # Whole-image strategies: move (i), board (ii), fen_whole. Each yields an ordered candidate
-    # list that first_legal_and_stats reduces to a prediction + legality flags. A degenerate or
-    # truncated response (LLMResponseError -- usually the model looping into a max_tokens runaway)
-    # is recorded as a FAILED board rather than crashing the whole run; the wasted call is still
-    # charged, since it cost real tokens.
-    try:
-        if method == "move":
-            result = estimate_move_llm(
-                llm_client, warped_image_path, previous_fen, corner_map,
-                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-            )
-            candidates, kind = result["moves"], "move"
-            record["n_suggested"] = len(result["moves"])  # candidates the model returned (raw)
-        elif method == "board":
-            result = estimate_board_after_llm(
-                llm_client, warped_image_path, previous_fen, corner_map,
-                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-            )
-            candidates, kind = result["fen_boards"], "board"
-            record["n_suggested"] = len(result["fen_boards"])  # candidates the model returned (raw)
-            # Bonus square metric: read it off the model's first returned board, if parseable.
-            if result["fen_boards"]:
-                labels = fen_board_to_labels(result["fen_boards"][0])
-                if labels is not None:
-                    record["correct_square"] = _labels_accuracy(labels, true_labels)
-        else:  # fen_whole
-            result = estimate_fen_whole_llm(
-                llm_client, warped_image_path,
-                model=model_version, prompt_version=prompt_version, reasoning=reasoning,
-            )
-            candidates, kind = [result["fen_board"]], "board"
-            labels = fen_board_to_labels(result["fen_board"])
-            if labels is not None:
-                record["correct_square"] = _labels_accuracy(labels, true_labels)
-
-        stats = first_legal_and_stats(previous_fen, candidates, kind)
-        record["correct_board"] = bool(stats["first_legal"] is not None and stats["first_legal"] == actual_move)
-        record["board_rank"] = _rank(stats["ordered_legal"], actual_move, len(stats["ordered_legal"]))
-        record["first_output_illegal"] = stats["first_output_illegal"]
-        record["none_legal"] = stats["none_legal"]
-        usage, elapsed = result["usage"], result["elapsed"]
-    except LLMResponseError as exc:
-        # No usable answer for this board: count it as a failed prediction (no legal candidate),
-        # but still charge the wasted call.
-        print(f"  {warped_image_path.parent.name}: unusable response ({exc}) -- recorded as failed board")
+def _score_whole_image(method, parsed, previous_fen, actual_move, true_labels) -> dict:
+    """Score one whole-image answer (move/board/fen_whole) into a record. `parsed` is the JSON
+    object the model returned, or None when the call failed (errored/expired/max_tokens truncation)
+    -- a failure is recorded as a failed board (no legal candidate), mirroring the old synchronous
+    LLMResponseError handling."""
+    record = {name: None for name in METRIC_NAMES}
+    if parsed is None:
         record["correct_board"] = False
         record["first_output_illegal"] = True
         record["none_legal"] = True
         if method in ("move", "board"):
             record["n_suggested"] = 0
-        usage, elapsed = exc.usage, exc.elapsed
+        return record
 
-    if usage is not None:
-        record["input_tokens"] = usage.input_tokens
-        record["output_tokens"] = usage.output_tokens
-        record["cost"] = _cost(usage.input_tokens, usage.output_tokens, model_version)
+    if method == "move":
+        candidates, kind = _collect_slots(parsed, "move"), "move"
+        record["n_suggested"] = len(candidates)  # candidates the model returned (raw)
+    elif method == "board":
+        candidates, kind = _collect_slots(parsed, "board"), "board"
+        record["n_suggested"] = len(candidates)
+        # Bonus square metric: read it off the model's first returned board, if parseable.
+        if candidates:
+            labels = fen_board_to_labels(candidates[0])
+            if labels is not None:
+                record["correct_square"] = _labels_accuracy(labels, true_labels)
+    else:  # fen_whole
+        fen_board = str(parsed.get("fen_board", "")).strip()
+        candidates, kind = [fen_board], "board"
+        labels = fen_board_to_labels(fen_board)
+        if labels is not None:
+            record["correct_square"] = _labels_accuracy(labels, true_labels)
+
+    stats = first_legal_and_stats(previous_fen, candidates, kind)
+    record["correct_board"] = bool(stats["first_legal"] is not None and stats["first_legal"] == actual_move)
+    record["board_rank"] = _rank(stats["ordered_legal"], actual_move, len(stats["ordered_legal"]))
+    record["first_output_illegal"] = stats["first_output_illegal"]
+    record["none_legal"] = stats["none_legal"]
+    return record
+
+
+def _evaluate_cnn_board(cnn_estimator, previous_fen, actual_move, true_labels, squares_dir) -> dict:
+    """Run the trained CNN over one board's 64 square cutouts and score it. Local compute, so the
+    cost is zero and inference_time is the measured wall-clock."""
+    start = time.monotonic()
+    board_estimate = cnn_estimator.estimate_board(squares_dir)
+    elapsed = time.monotonic() - start
+    record = _score_square_board(board_estimate, previous_fen, actual_move, true_labels)
+    record["input_tokens"] = 0
+    record["output_tokens"] = 0
+    record["cost"] = 0.0
     record["inference_time"] = elapsed
+    return record
+
+
+def _score_batched_board(method, board_id, df_setup, parsed_by_cid, model_version) -> dict:
+    """Assemble one board's batched answers (looked up by custom_id) and score them, adding the
+    summed token usage and the (batch-discounted) cost. A square whose call failed contributes an
+    empty estimate; a failed whole-image call scores as a failed board."""
+    df_board = df_setup.filter(pl.col("image_id") == board_id)
+    true_labels = {r["square"]: r["label"] for r in df_board.select("square", "label").to_dicts()}
+    first_row = df_board.row(0, named=True)
+    previous_fen = first_row["previous_board_fen"]
+    actual_move = first_row["move_uci"]
+
+    input_tokens = output_tokens = 0
+    if method in ("square_label", "square_logits"):
+        board_estimate = BoardEstimate()
+        for square in SQUARES:
+            entry = parsed_by_cid.get(f"{board_id}/{square}")
+            if entry is not None and entry["parsed"] is not None:
+                setattr(board_estimate, square, parsed_to_square_estimate(method, entry["parsed"]))
+            else:
+                # A failed square: all-zero scores. Under estimate_move's softmax this is a shrug
+                # (no information) rather than a corrupted reading of that square.
+                setattr(board_estimate, square, SquareEstimate())
+            if entry is not None and entry["usage"] is not None:
+                input_tokens += entry["usage"].input_tokens
+                output_tokens += entry["usage"].output_tokens
+        record = _score_square_board(board_estimate, previous_fen, actual_move, true_labels)
+    else:
+        entry = parsed_by_cid.get(board_id)
+        parsed = entry["parsed"] if entry is not None else None
+        record = _score_whole_image(method, parsed, previous_fen, actual_move, true_labels)
+        if entry is not None and entry["usage"] is not None:
+            input_tokens = entry["usage"].input_tokens
+            output_tokens = entry["usage"].output_tokens
+
+    record["input_tokens"] = input_tokens
+    record["output_tokens"] = output_tokens
+    record["cost"] = _cost(input_tokens, output_tokens, model_version, batch=True)
+    record["inference_time"] = None  # batched: no meaningful per-board wall-clock
     return record
 
 
@@ -284,6 +320,227 @@ def _flush(output_path, base_existing, new_rows):
     return frame
 
 
+# --- Batch-API plumbing --------------------------------------------------------------------------
+
+def _load_setup(data, split, setup_id):
+    """The setup's data rows and its corner_map (camera_natural_orientation order)."""
+    df_setup = data.filter((pl.col("setup_split") == split) & (pl.col("setup_id") == setup_id))
+    with open(Path(df_setup["calibration_metadata_path"][0]), "r", encoding="utf-8") as f:
+        corner_map = json.load(f)["camera_natural_orientation"]["order"]
+    return df_setup, corner_map
+
+
+def _setup_requests(method, df_setup, data_root, setup_id, corner_map,
+                    model_version, prompt_version, reasoning):
+    """Yield (custom_id, params) for every Claude call a VLM method needs over this setup's boards.
+    The custom_id locates the answer for scoring: '<board_id>' for the whole-image methods,
+    '<board_id>/<square>' for the square methods (unique within the setup's batch(es))."""
+    board_ids = sorted(df_setup["image_id"].unique().to_list())
+    for board_id in board_ids:
+        df_board = df_setup.filter(pl.col("image_id") == board_id)
+        previous_fen = df_board.row(0, named=True)["previous_board_fen"]
+        board_dir = data_root / setup_id / board_id
+        warped = board_dir / "image_warped.png"
+        if method in ("square_label", "square_logits"):
+            for square in SQUARES:
+                base = board_dir / "squares" / square / f"{square}.png"
+                annotated = base.parent / (base.stem + "_annotated" + base.suffix)
+                yield f"{board_id}/{square}", build_square_params(
+                    method, annotated, model_version, prompt_version, reasoning
+                )
+        elif method == "move":
+            yield board_id, build_move_params(
+                warped, previous_fen, corner_map, model_version, prompt_version, reasoning
+            )
+        elif method == "board":
+            yield board_id, build_board_params(
+                warped, previous_fen, corner_map, model_version, prompt_version, reasoning
+            )
+        else:  # fen_whole
+            yield board_id, build_fen_whole_params(
+                warped, corner_map, model_version, prompt_version, reasoning
+            )
+
+
+def _chunk_requests(requests):
+    """Split (custom_id, params) pairs into batches under the API's per-batch count/size limits."""
+    batch, n_bytes = [], 0
+    for custom_id, params in requests:
+        size = len(json.dumps(params))
+        if batch and (len(batch) >= _MAX_REQUESTS_PER_BATCH or n_bytes + size > _MAX_BYTES_PER_BATCH):
+            yield batch
+            batch, n_bytes = [], 0
+        batch.append((custom_id, params))
+        n_bytes += size
+    if batch:
+        yield batch
+
+
+def _create_batch(client, chunk):
+    """Create one Message Batch from a chunk of (custom_id, params) and return its id."""
+    requests = [{"custom_id": custom_id, "params": params} for custom_id, params in chunk]
+    return client.messages.batches.create(requests=requests).id
+
+
+def _await_batches(client, batch_ids, poll_interval):
+    """Block until every batch has ended (succeeded/errored/expired all resolve to 'ended')."""
+    pending = set(batch_ids)
+    while pending:
+        for batch_id in list(pending):
+            if client.messages.batches.retrieve(batch_id).processing_status == "ended":
+                pending.discard(batch_id)
+        if pending:
+            time.sleep(poll_interval)
+
+
+def _collect_batches(client, batch_ids):
+    """Map custom_id -> {"parsed": dict|None, "usage": usage|None} across the batches. A request that
+    errored/expired/was canceled, or whose message did not parse (max_tokens truncation), yields
+    parsed=None; usage is kept only when the model actually produced (and billed) a message."""
+    results = {}
+    for batch_id in batch_ids:
+        for item in client.messages.batches.results(batch_id):
+            if item.result.type == "succeeded":
+                message = item.result.message
+                try:
+                    parsed = parse_message(message)
+                except LLMResponseError:
+                    parsed = None
+                results[item.custom_id] = {"parsed": parsed, "usage": message.usage}
+            else:
+                results[item.custom_id] = {"parsed": None, "usage": None}
+    return results
+
+
+def _config_key(method, model_version, prompt_version, reasoning, prior_correction):
+    return "|".join(str(v) for v in (method, model_version, prompt_version, reasoning, prior_correction))
+
+
+def _sidecar_path(output_path):
+    return output_path.with_suffix(".batches.json")
+
+
+def _load_sidecar(path):
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_sidecar(path, state):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+# --- Execution engines ---------------------------------------------------------------------------
+
+def _run_cnn(data, data_root, setup_jobs, base, cnn_estimator, method, model_version,
+             prompt_version, reasoning, prior_correction, data_path, output_path):
+    """Score the CNN locally, flushing after each setup so a Ctrl-C keeps completed setups."""
+    new_rows = []
+    for split, setup_id in tqdm(setup_jobs, desc="eval cnn", unit="setup"):
+        try:
+            df_setup, corner_map = _load_setup(data, split, setup_id)
+            cnn_estimator.top_left_corner = corner_map["tl"]
+
+            metrics = defaultdict(list)
+            board_ids = sorted(df_setup["image_id"].unique().to_list())
+            for board_id in tqdm(board_ids, desc=setup_id, unit="board", leave=False):
+                df_board = df_setup.filter(pl.col("image_id") == board_id)
+                if df_board.height != 64:
+                    print(f"Warning: {split}/{setup_id}/{board_id} has {df_board.height} rows, not 64")
+                true_labels = {
+                    r["square"]: r["label"] for r in df_board.select("square", "label").to_dicts()
+                }
+                first_row = df_board.row(0, named=True)
+                record = _evaluate_cnn_board(
+                    cnn_estimator, first_row["previous_board_fen"], first_row["move_uci"],
+                    true_labels, data_root / setup_id / board_id / "squares",
+                )
+                for name, value in record.items():
+                    metrics[name].append(value)
+
+            if metrics["correct_board"]:  # skip a setup with no evaluable boards
+                new_rows.append(_setup_row(
+                    method, model_version, prompt_version, reasoning, prior_correction,
+                    data_path, split, setup_id, metrics,
+                ))
+                _flush(output_path, base, new_rows)
+        except KeyboardInterrupt:
+            print(f"\nStopped during {split}/{setup_id}. Re-run to resume (completed setups are skipped).")
+            break
+
+    if not new_rows:
+        return base if base is not None else pl.DataFrame([])
+    return _flush(output_path, base, new_rows)
+
+
+def _run_batch(data, data_root, setup_jobs, base, existing, client, method, model_version,
+               prompt_version, reasoning, prior_correction, data_path, output_path,
+               resume, no_wait, poll_interval):
+    """Submit each queued setup's requests to the Message Batches API (recording batch ids to the
+    sidecar as they are created), then -- unless --no-wait -- poll each setup's batches to
+    completion, collect the results, score, and flush its row."""
+    sidecar_path = _sidecar_path(output_path)
+    sidecar = _load_sidecar(sidecar_path)
+    config_state = sidecar.setdefault(
+        _config_key(method, model_version, prompt_version, reasoning, prior_correction), {}
+    )
+
+    # Phase A -- submit: ensure every queued setup has batches. Persist ids immediately so a crash
+    # (or --no-wait) never loses or re-submits work already running server-side.
+    for split, setup_id in setup_jobs:
+        key = f"{split}/{setup_id}"
+        if not resume:
+            config_state.pop(key, None)  # --no-resume: forget any prior submission and resubmit
+        if key in config_state:
+            continue
+        df_setup, corner_map = _load_setup(data, split, setup_id)
+        requests = list(_setup_requests(
+            method, df_setup, data_root, setup_id, corner_map, model_version, prompt_version, reasoning
+        ))
+        batch_ids = [_create_batch(client, chunk) for chunk in _chunk_requests(requests)]
+        config_state[key] = {"batch_ids": batch_ids, "n_requests": len(requests)}
+        _save_sidecar(sidecar_path, sidecar)
+        print(f"submitted {key}: {len(requests)} request(s) in {len(batch_ids)} batch(es)")
+
+    if no_wait:
+        print("submitted; re-run without --no-wait to poll and collect once the batches finish.")
+        return existing if existing is not None else pl.DataFrame([])
+
+    # Phase B/C -- await each setup's batches, then collect + score + flush. Awaiting per setup in
+    # order is fine: the batches run in parallel server-side, so later setups are usually already
+    # done by the time their turn comes.
+    new_rows = []
+    try:
+        for split, setup_id in tqdm(setup_jobs, desc=f"collect {method}", unit="setup"):
+            batch_ids = config_state[f"{split}/{setup_id}"]["batch_ids"]
+            _await_batches(client, batch_ids, poll_interval)
+            parsed_by_cid = _collect_batches(client, batch_ids)
+
+            df_setup, _ = _load_setup(data, split, setup_id)
+            metrics = defaultdict(list)
+            board_ids = sorted(df_setup["image_id"].unique().to_list())
+            for board_id in board_ids:
+                record = _score_batched_board(method, board_id, df_setup, parsed_by_cid, model_version)
+                for name, value in record.items():
+                    metrics[name].append(value)
+
+            if metrics["correct_board"]:  # skip a setup with no evaluable boards
+                new_rows.append(_setup_row(
+                    method, model_version, prompt_version, reasoning, prior_correction,
+                    data_path, split, setup_id, metrics,
+                ))
+                _flush(output_path, base, new_rows)
+    except (anthropic.APIError, KeyboardInterrupt) as exc:
+        print(f"\nStopped while collecting: {type(exc).__name__}: {exc}")
+        print("Re-run to resume: submitted batches are durable and completed setups are skipped.")
+
+    if not new_rows:
+        return base if base is not None else pl.DataFrame([])
+    return _flush(output_path, base, new_rows)
+
+
 def main(
     method: str,
     model_version: str | None = None,
@@ -294,6 +551,8 @@ def main(
     splits: tuple[str, ...] = ("val", "test"),
     resume: bool = True,
     max_setups: int | None = None,
+    no_wait: bool = False,
+    poll_interval: int = 30,
     data_path: Path = Path("data/generated/data.csv"),
     output_path: Path = Path("evaluation/results.csv"),
 ):
@@ -306,16 +565,18 @@ def main(
     defaults to the weights path so each checkpoint is distinguishable; pass a friendlier label to
     override.
 
-    The VLM methods make many billed API calls, so runs are made resumable and scopeable:
+    The VLM methods run through the Message Batches API (see the module docstring), so runs are
+    resumable and scopeable:
     - `splits`: which of "val"/"test" to score (both by default).
     - `resume` (default True): skip (split, setup) already present in `output_path` for THIS run's
-      configuration; re-run after a failure and it continues where it stopped. `resume=False`
-      regenerates and replaces those rows instead.
+      configuration; re-run after an interruption and it continues where it stopped. `resume=False`
+      regenerates and replaces those rows instead (and resubmits their batches).
     - `max_setups`: cap the number of *not-yet-done* setups generated this run (re-run to do more).
+    - `no_wait`: for the VLM methods, submit the batches and return without polling; a later re-run
+      collects them. `poll_interval`: seconds between batch status checks while waiting.
 
-    Progress is flushed to `output_path` after every completed setup, and a credit/API failure (or
-    Ctrl-C) stops cleanly with everything so far already on disk. The unit is one setup: a setup
-    that fails partway is not saved and is redone on the next run.
+    Progress is flushed to `output_path` after every completed setup, so an interruption keeps
+    everything so far. The unit is one setup.
     """
     assert method in METHODS, f"method must be one of {METHODS}"
     assert set(splits) <= {"val", "test"}, f"splits must be a subset of val/test; got {splits}"
@@ -341,8 +602,7 @@ def main(
 
     # Backends: build the estimator/client this method needs, once.
     cnn_estimator = None
-    llm_square_estimator = None
-    llm_client = None
+    client = None
     if method == "cnn":
         cnn_estimator = BoardEstimator(
             model_type="CNN",
@@ -351,16 +611,8 @@ def main(
             calibration_metadata_path=Path(data["calibration_metadata_path"][0]),
             prior_correction=prior_correction,
         )
-    elif method in ("square_label", "square_logits"):
-        llm_square_estimator = BoardEstimator(
-            model_type="LLM",
-            llm_method=method,
-            model_version=model_version,
-            prompt_version=prompt_version,
-            reasoning=reasoning,
-        )
-    else:  # move / board / fen_whole
-        llm_client = anthropic.Anthropic()
+    else:  # square_label / square_logits / move / board / fen_whole -> Message Batches API
+        client = anthropic.Anthropic()
 
     # --- Resume / overwrite bookkeeping ---------------------------------------------------------
     existing = pl.read_csv(output_path) if output_path.exists() else None
@@ -405,91 +657,42 @@ def main(
         print("nothing to do (all requested setups already generated, or max_setups=0)")
         return existing if existing is not None else pl.DataFrame([])
 
-    # --- Generate, flushing after each completed setup so a failure keeps prior progress ---------
-    new_rows = []
-    for split, setup_id in tqdm(setup_jobs, desc=f"eval {method}", unit="setup"):
-        try:
-            df_setup = data.filter(
-                (pl.col("setup_split") == split) & (pl.col("setup_id") == setup_id)
-            )
-
-            with open(Path(df_setup["calibration_metadata_path"][0]), "r", encoding="utf-8") as f:
-                calibration_metadata = json.load(f)
-            corner_map = calibration_metadata["camera_natural_orientation"]["order"]
-            if cnn_estimator is not None:
-                cnn_estimator.top_left_corner = corner_map["tl"]
-
-            metrics = defaultdict(list)
-            board_ids = sorted(df_setup["image_id"].unique().to_list())
-            # Inner bar over boards (leave=False so it clears when the setup finishes); useful for
-            # the slow single-call/64-call VLM methods where one setup is many API round-trips.
-            for board_id in tqdm(board_ids, desc=setup_id, unit="board", leave=False):
-                df_board = df_setup.filter(pl.col("image_id") == board_id)
-                if df_board.height != 64:
-                    print(f"Warning: {split}/{setup_id}/{board_id} has {df_board.height} rows, not 64")
-
-                true_labels = {
-                    r["square"]: r["label"]
-                    for r in df_board.select("square", "label").to_dicts()
-                }
-                first_row = df_board.row(0, named=True)
-                previous_fen = first_row["previous_board_fen"]
-                actual_move = first_row["move_uci"]
-
-                record = _evaluate_board(
-                    method,
-                    cnn_estimator=cnn_estimator,
-                    llm_square_estimator=llm_square_estimator,
-                    llm_client=llm_client,
-                    model_version=model_version,
-                    prompt_version=prompt_version,
-                    reasoning=reasoning,
-                    previous_fen=previous_fen,
-                    actual_move=actual_move,
-                    true_labels=true_labels,
-                    squares_dir=data_root / setup_id / board_id / "squares",
-                    warped_image_path=data_root / setup_id / board_id / "image_warped.png",
-                    corner_map=corner_map,
-                )
-                for name, value in record.items():
-                    metrics[name].append(value)
-
-            if metrics["correct_board"]:  # skip a setup with no evaluable boards
-                new_rows.append(_setup_row(
-                    method, model_version, prompt_version, reasoning, prior_correction,
-                    data_path, split, setup_id, metrics,
-                ))
-                # Persist after every completed setup: an API failure below then loses at most the
-                # next (unfinished) setup, never a completed one.
-                _flush(output_path, base, new_rows)
-        except (anthropic.APIError, anthropic.APIConnectionError, KeyboardInterrupt) as exc:
-            print(f"\nStopped during {split}/{setup_id}: {type(exc).__name__}: {exc}")
-            print("Re-run to resume (completed setups are skipped).")
-            break
-
-    if not new_rows:
-        # Failed on the very first queued setup, or every queued setup had no evaluable boards.
-        return base if base is not None else pl.DataFrame([])
-    return _flush(output_path, base, new_rows)
+    if method == "cnn":
+        return _run_cnn(
+            data, data_root, setup_jobs, base, cnn_estimator, method, model_version,
+            prompt_version, reasoning, prior_correction, data_path, output_path,
+        )
+    return _run_batch(
+        data, data_root, setup_jobs, base, existing, client, method, model_version,
+        prompt_version, reasoning, prior_correction, data_path, output_path,
+        resume, no_wait, poll_interval,
+    )
 
 
 if __name__ == "__main__":
     # Score one board-reading method over the val/test positions and append the per-(split, setup)
     # rows to the output CSV. One run = one method + config.
     #
-    #   # the trained CNN (model_version defaults to the weights path):
+    #   # the trained CNN (model_version defaults to the weights path); runs locally:
     #   uv run python -m chess_assistant.model.evaluation cnn \
     #       --model-weights-path weights/model_state_dict.safetensors
     #
-    #   # the strongest VLM, predicting the move from the after-image, reasoning out loud first:
+    #   # the strongest VLM, predicting the move from the after-image, reasoning out loud first.
+    #   # This submits a Message Batch and polls until it finishes, then scores:
     #   uv run python -m chess_assistant.model.evaluation move --reasoning text
     #
-    #   # generate the next 3 val setups only; safe to re-run (skips done setups) after a topping up
+    #   # generate the next 3 val setups only; safe to re-run (skips done setups) after a crash:
     #   uv run python -m chess_assistant.model.evaluation move --splits val --max-setups 3
     #
+    #   # big run: submit now and come back later -- the first call returns after submitting,
+    #   # the second collects whatever has finished:
+    #   uv run python -m chess_assistant.model.evaluation square_logits --no-wait
+    #   uv run python -m chess_assistant.model.evaluation square_logits          # collect
+    #
     # The VLM methods (square_label, square_logits, move, board, fen_whole) make billed Claude API
-    # calls and need ANTHROPIC_API_KEY. Runs are resumable: progress is flushed after every setup,
-    # and completed setups are skipped on re-run (pass --no-resume to regenerate).
+    # calls (via the Message Batches API, 50% off) and need ANTHROPIC_API_KEY. Runs are resumable:
+    # batch ids are recorded to <output>.batches.json, progress is flushed after every setup, and
+    # completed setups are skipped on re-run (pass --no-resume to regenerate).
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -512,7 +715,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--reasoning", choices=["none", "text", "thinking"], default="none",
-        help="LLM reasoning mode before the answer (see vision._call_claude).",
+        help="LLM reasoning mode before the answer (see vision._build_message_params).",
     )
     parser.add_argument(
         "--splits", nargs="+", choices=["val", "test"], default=["val", "test"],
@@ -525,6 +728,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-setups", type=int, default=None,
         help="Cap the number of not-yet-done setups generated this run (re-run to do more).",
+    )
+    parser.add_argument(
+        "--no-wait", action="store_true",
+        help="VLM methods: submit the batches and exit without polling; re-run to collect.",
+    )
+    parser.add_argument(
+        "--poll-interval", type=int, default=30,
+        help="VLM methods: seconds between batch status checks while waiting (default 30).",
     )
     parser.add_argument("--data-path", type=Path, default=Path("data/generated/data.csv"))
     parser.add_argument("--output-path", type=Path, default=Path("evaluation/results.csv"))
@@ -540,6 +751,8 @@ if __name__ == "__main__":
         splits=tuple(args.splits),
         resume=args.resume,
         max_setups=args.max_setups,
+        no_wait=args.no_wait,
+        poll_interval=args.poll_interval,
         data_path=args.data_path,
         output_path=args.output_path,
     )

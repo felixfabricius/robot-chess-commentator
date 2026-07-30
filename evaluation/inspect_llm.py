@@ -31,6 +31,7 @@ from chess_assistant.vision import (
     _FEN_WHOLE_SCHEMA,
     PROMPTS,
     _image_block,
+    _orientation_sentence,
     _previous_position_prompt,
     _with_reasoning_field,
 )
@@ -49,11 +50,11 @@ def inspect(method, index, split, model, max_tokens, structured, reasoning,
     row = data.filter(pl.col("image_id") == board_id).row(0, named=True)
 
     warped = data_root / setup_id / board_id / "image_warped.png"
+    with open(data_root / setup_id / "calibration_metadata.json", encoding="utf-8") as f:
+        corner_map = json.load(f)["camera_natural_orientation"]["order"]
     if method == "fen_whole":
-        prompt = PROMPTS["fen_whole"][1]
+        prompt = PROMPTS["fen_whole"][1].format(orientation=_orientation_sentence(corner_map))
     else:
-        with open(data_root / setup_id / "calibration_metadata.json", encoding="utf-8") as f:
-            corner_map = json.load(f)["camera_natural_orientation"]["order"]
         prompt = _previous_position_prompt(PROMPTS[method][1], row["previous_board_fen"], corner_map)
 
     schema = _SCHEMA[method]

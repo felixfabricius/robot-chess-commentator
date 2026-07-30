@@ -281,85 +281,91 @@ def _with_reasoning_field(schema: dict) -> dict:
     }
 
 
-def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="none", max_tokens=1024):
-    """One Claude call with a structured (json_schema) answer. Returns (parsed, usage, elapsed).
-
-    `parsed` is the JSON object matching `answer_schema` (plus a `reasoning` key when
-    reasoning == "text"). `usage` is the response's token usage (for cost); `elapsed` is wall-clock
-    seconds for this single call (for timing). `reasoning` also raises the output budget so the
-    reasoning tokens don't crowd out the answer:
-      - "none":     answer only; uses `max_tokens` as given.
+def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="none", max_tokens=1024):
+    """Assemble the kwargs dict for one Claude structured-output call. Shared by the synchronous
+    path (`_call_claude`) and the batch path (the evaluation harness builds a request per call from
+    this), so both send byte-identical requests and only the transport differs. Applies the
+    `reasoning` knob:
+      - "none":     answer only; uses `max_tokens` as given, thinking disabled.
       - "text":     a visible `reasoning` field is added to the schema and filled before the answer;
-                    `max_tokens` is floored at 4096.
-      - "thinking": adaptive thinking (hidden), same structured final answer; `max_tokens` is
-                    floored at 8192 and the call is streamed.
+                    `max_tokens` floored at 4096, thinking disabled.
+      - "thinking": adaptive thinking (hidden), same structured final answer; `max_tokens` floored
+                    at 8192.
+
+    Hidden thinking is set EXPLICITLY, never left to the model default: some models (e.g. Sonnet 5)
+    run adaptive thinking whenever `thinking` is omitted, and that thinking shares the max_tokens
+    budget -- so an omitted param silently burns the whole budget on thinking and the answer never
+    lands (stop_reason=max_tokens, thinking_tokens ~= max_tokens). Reasoning also shares the output
+    budget with the (tiny) answer, hence the raised floors.
     """
     assert reasoning in ("none", "text", "thinking")
     schema = _with_reasoning_field(answer_schema) if reasoning == "text" else answer_schema
     if reasoning == "text":
         prompt = prompt + "\nFirst reason step by step in the `reasoning` field, then fill in the answer."
-
-    content = [_image_block(p) for p in image_paths] + [{"type": "text", "text": prompt}]
-    messages = [{"role": "user", "content": content}]
-    output_config = {"format": {"type": "json_schema", "schema": schema}}
-
-    # Hidden thinking is controlled EXPLICITLY, never left to the model default: some models (e.g.
-    # Sonnet 5) run adaptive thinking whenever `thinking` is omitted, and that thinking shares the
-    # max_tokens budget -- so an omitted param silently burns the whole budget on thinking and the
-    # answer never lands (stop_reason=max_tokens, thinking_tokens ~= max_tokens). Only reasoning
-    # == "thinking" enables it; "none"/"text" disable it so the answer is produced immediately.
+        max_tokens = max(max_tokens, 4096)
+    elif reasoning == "thinking":
+        max_tokens = max(max_tokens, 8192)
     thinking = {"type": "adaptive"} if reasoning == "thinking" else {"type": "disabled"}
 
-    # Reasoning shares the output budget with the answer, so scale max_tokens up for those modes
-    # (the answer itself is tiny). Thinking needs the most; a visible `reasoning` field needs a
-    # middle floor so a longer scratchpad isn't truncated. "none" uses the caller's cap unchanged.
-    if reasoning == "thinking":
-        max_tokens = max(max_tokens, 8192)
-    elif reasoning == "text":
-        max_tokens = max(max_tokens, 4096)
+    content = [_image_block(p) for p in image_paths] + [{"type": "text", "text": prompt}]
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "thinking": thinking,
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        "messages": [{"role": "user", "content": content}],
+    }
 
-    start = time.monotonic()
-    if reasoning == "thinking":
-        # Stream to avoid the SDK's non-streaming timeout guard at large max_tokens.
-        with client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            thinking=thinking,
-            output_config=output_config,
-            messages=messages,
-        ) as stream:
-            message = stream.get_final_message()
-    else:
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            thinking=thinking,
-            output_config=output_config,
-            messages=messages,
-        )
-    elapsed = time.monotonic() - start
 
-    # With structured output the JSON arrives in a text block. If there is none, the object never
-    # completed -- almost always the response hit the max_tokens cap (constrained decoding was
-    # truncated mid-object, often because the model degenerated into runaway output) or was a
-    # safety refusal. Raise a typed error carrying usage/elapsed so the caller can record the
-    # (wasted) cost and treat the board as a failed prediction rather than crashing.
+def parse_message(message) -> dict:
+    """Extract and JSON-parse the structured answer from a completed Claude message.
+
+    With structured output the JSON arrives in a text block. If there is none, the object never
+    completed -- almost always the response hit the max_tokens cap (constrained decoding truncated
+    mid-object, often because the model degenerated into runaway output) or was a safety refusal.
+    A present-but-invalid text block is the same "unusable answer" outcome. Either way raise a typed
+    LLMResponseError carrying stop_reason/usage so the caller can record the (wasted) cost and treat
+    the board as a failed prediction rather than crashing. Shared by `_call_claude` (synchronous)
+    and the batch result handler; the batch path leaves `elapsed` at None (no per-call wall-clock).
+    """
     text_block = next((block for block in message.content if block.type == "text"), None)
     if text_block is None:
         raise LLMResponseError(
             f"no text block to parse (stop_reason={message.stop_reason!r}, "
-            f"output_tokens={message.usage.output_tokens}, max_tokens={max_tokens})",
-            stop_reason=message.stop_reason, usage=message.usage, elapsed=elapsed,
+            f"output_tokens={message.usage.output_tokens})",
+            stop_reason=message.stop_reason, usage=message.usage,
         )
     try:
-        parsed = json.loads(text_block.text)
+        return json.loads(text_block.text)
     except json.JSONDecodeError as exc:
-        # A present-but-truncated/invalid text block (e.g. max_tokens hit part-way through an
-        # unconstrained-looking response) -- same "unusable answer" outcome.
         raise LLMResponseError(
             f"text block is not valid JSON (stop_reason={message.stop_reason!r}): {exc}",
-            stop_reason=message.stop_reason, usage=message.usage, elapsed=elapsed,
+            stop_reason=message.stop_reason, usage=message.usage,
         ) from exc
+
+
+def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="none", max_tokens=1024):
+    """One synchronous Claude call with a structured (json_schema) answer. Returns
+    (parsed, usage, elapsed): `parsed` is the JSON object matching `answer_schema` (plus a
+    `reasoning` key when reasoning == "text"), `usage` is the token usage (for cost), `elapsed` is
+    wall-clock seconds for this call (for timing). See `_build_message_params` for the reasoning
+    knob. A max_tokens truncation / unparseable answer raises LLMResponseError (with `elapsed` set)."""
+    params = _build_message_params(model, image_paths, prompt, answer_schema, reasoning, max_tokens)
+
+    start = time.monotonic()
+    if reasoning == "thinking":
+        # Stream to avoid the SDK's non-streaming timeout guard at the large thinking max_tokens.
+        with client.messages.stream(**params) as stream:
+            message = stream.get_final_message()
+    else:
+        message = client.messages.create(**params)
+    elapsed = time.monotonic() - start
+
+    try:
+        parsed = parse_message(message)
+    except LLMResponseError as exc:
+        exc.elapsed = elapsed  # attach the wall-clock the batch path can't measure
+        raise
     return parsed, message.usage, elapsed
 
 
@@ -560,6 +566,65 @@ def estimate_fen_whole_llm(client, image_path, corner_map, model="claude-sonnet-
     }
 
 
+# --- Batch-API building blocks: build a request / turn a parsed answer into an estimate ----------
+# The batch harness (model/evaluation.py) builds every request up front and scores the responses
+# minutes-to-hours later, so request construction and answer interpretation are factored out here
+# to be shared with the synchronous path -- both send identical requests and interpret answers the
+# same way; only the transport (live call vs Message Batches) differs.
+
+# max_tokens the two square strategies request synchronously; reused so batch requests match.
+_SQUARE_MAX_TOKENS = {"square_label": 512, "square_logits": 1024}
+
+
+def parsed_to_square_estimate(llm_method, parsed, image_path=None) -> SquareEstimate:
+    """Turn one square-classification answer into a SquareEstimate of logit-like scores, exactly as
+    the synchronous `estimate_square` does. square_label -> a one-hot (chosen label 1.0, rest 0),
+    which under estimate_move's CrossEntropyLoss ranks moves the same as the old squared-error path.
+    square_logits -> the per-label scores normalised into a distribution and stored as its log, so
+    the values are log-probabilities like the CNN's (a drop-in for estimate_move); a degenerate
+    all-zero/negative response falls back to a uniform prior."""
+    square_estimate = SquareEstimate(image_path=image_path, copied=False, copied_from=None)
+    if llm_method == "square_label":
+        setattr(square_estimate, parsed["label"], 1.0)
+    else:  # square_logits (iv)
+        scores = {label: max(float(parsed["scores"].get(label, 0.0)), 0.0) for label in PIECES}
+        total = sum(scores.values())
+        for label in PIECES:
+            prob = (scores[label] / total) if total > 0 else (1.0 / len(PIECES))
+            setattr(square_estimate, label, math.log(prob) if prob > 0 else -1e9)
+    return square_estimate
+
+
+def build_square_params(llm_method, annotated_image_path, model, prompt_version=1, reasoning="none"):
+    """Request params for one square classification (method iii/iv). `annotated_image_path` is the
+    marked-up crop the square prompt refers to (the `_annotated` PNG)."""
+    schema = _SQUARE_LABEL_SCHEMA if llm_method == "square_label" else _SQUARE_LOGITS_SCHEMA
+    return _build_message_params(
+        model, [annotated_image_path], PROMPTS[llm_method][prompt_version], schema,
+        reasoning=reasoning, max_tokens=_SQUARE_MAX_TOKENS[llm_method],
+    )
+
+
+def build_move_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none"):
+    """Request params for method i (ordered candidate moves). Score the response with
+    `_collect_slots(parsed, "move")` + `first_legal_and_stats(kind="move")`."""
+    prompt = _previous_position_prompt(PROMPTS["move"][prompt_version], previous_fen, corner_map)
+    return _build_message_params(model, [warped_image_path], prompt, _MOVE_SCHEMA, reasoning=reasoning)
+
+
+def build_board_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none"):
+    """Request params for method ii (ordered candidate positions). Score with
+    `_collect_slots(parsed, "board")` + `first_legal_and_stats(kind="board")`."""
+    prompt = _previous_position_prompt(PROMPTS["board"][prompt_version], previous_fen, corner_map)
+    return _build_message_params(model, [warped_image_path], prompt, _BOARD_SCHEMA, reasoning=reasoning)
+
+
+def build_fen_whole_params(image_path, corner_map, model, prompt_version=1, reasoning="none"):
+    """Request params for the whole-board FEN baseline. Score with `parsed["fen_board"]`."""
+    prompt = PROMPTS["fen_whole"][prompt_version].format(orientation=_orientation_sentence(corner_map))
+    return _build_message_params(model, [image_path], prompt, _FEN_WHOLE_SCHEMA, reasoning=reasoning)
+
+
 class BoardEstimator:
     def __init__(self, model_type: str = "CNN", config: DictConfig | None = None, calibration_metadata_path: Path | None = None, model_weights_path = None, device = None, model = None, prior_correction: bool = True,
                  model_version: str | None = None, prompt_version: int | None = None, llm_method: str = "square_label", reasoning: str = "none"):
@@ -646,32 +711,14 @@ class BoardEstimator:
         """
         if self.model_type == "LLM":
             image_path = image_path.parent / (image_path.stem + "_annotated" + image_path.suffix)
-            square_estimate = SquareEstimate(image_path=image_path, copied=False, copied_from=None)
-
-            if self.llm_method == "square_label":
-                parsed, usage, elapsed = _call_claude(
-                    self.client, self.model_version, [image_path],
-                    PROMPTS["square_label"][self.prompt_version], _SQUARE_LABEL_SCHEMA,
-                    reasoning=self.reasoning, max_tokens=512,
-                )
-                # One-hot: the chosen label scores 1.0, the rest stay 0. Fed to estimate_move's
-                # CrossEntropyLoss this ranks moves the same as the old squared-error path did.
-                setattr(square_estimate, parsed["label"], 1.0)
-            else:  # square_logits (iv)
-                parsed, usage, elapsed = _call_claude(
-                    self.client, self.model_version, [image_path],
-                    PROMPTS["square_logits"][self.prompt_version], _SQUARE_LOGITS_SCHEMA,
-                    reasoning=self.reasoning, max_tokens=1024,
-                )
-                # Normalise the per-label scores into a distribution and store its log, so the
-                # values are log-probabilities like the CNN's (a drop-in for estimate_move). A
-                # degenerate all-zero/negative response falls back to a uniform prior.
-                scores = {label: max(float(parsed["scores"].get(label, 0.0)), 0.0) for label in PIECES}
-                total = sum(scores.values())
-                for label in PIECES:
-                    prob = (scores[label] / total) if total > 0 else (1.0 / len(PIECES))
-                    setattr(square_estimate, label, math.log(prob) if prob > 0 else -1e9)
-
+            schema = _SQUARE_LABEL_SCHEMA if self.llm_method == "square_label" else _SQUARE_LOGITS_SCHEMA
+            parsed, usage, elapsed = _call_claude(
+                self.client, self.model_version, [image_path],
+                PROMPTS[self.llm_method][self.prompt_version], schema,
+                reasoning=self.reasoning, max_tokens=_SQUARE_MAX_TOKENS[self.llm_method],
+            )
+            # Same interpretation the batch path uses, so the two agree square-for-square.
+            square_estimate = parsed_to_square_estimate(self.llm_method, parsed, image_path=image_path)
             self.last_usage = usage
             self.last_elapsed = elapsed
             return square_estimate
