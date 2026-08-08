@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from chess_assistant import robot
-from chess_assistant.robot import (
+from chess_commentator import robot
+from chess_commentator.robot import (
     OUTRO_PROMPT_END,
     PROMPT_END,
     Speaker,
@@ -12,7 +12,7 @@ from chess_assistant.robot import (
     build_prompt,
     format_uci_for_speech,
 )
-from chess_assistant.speech_clips import KOKORO_SAMPLE_RATE, bake_clips, clip_texts
+from chess_commentator.speech_clips import KOKORO_SAMPLE_RATE, bake_clips, clip_texts
 
 
 def move_info(**overrides):
@@ -441,7 +441,7 @@ def test_speaker_never_bakes_on_a_cold_cache(monkeypatch, tmp_path, capsys):
 
         out = capsys.readouterr().out
         assert f"{len(clip_texts())}/{len(clip_texts())} clips missing" in out
-        assert "uv run python -m chess_assistant.pregenerate_speech --voice bm_george" in out
+        assert "uv run python -m chess_commentator.pregenerate_speech --voice bm_george" in out
     finally:
         spk.shutdown()
 

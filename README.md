@@ -1,4 +1,4 @@
-# chess-assistant
+# robot-chess-commentator
 
 A [Reachy Mini](https://huggingface.co/blog/reachy-mini) desktop robot that watches two humans play
 physical chess, reads the board from a single camera photo with a custom 1.3 MB CNN, ranks the legal
@@ -16,7 +16,7 @@ and roasting the bad ones.
 ### Pregenerate the move announcements
 
 ```bash
-uv run python -m chess_assistant.pregenerate_speech
+uv run python -m chess_commentator.pregenerate_speech
 ```
 
 Run this once before the first game. It synthesizes the ~150 fragments that every move

@@ -1,13 +1,13 @@
 """Tests for the pure calibration helpers (no reachy hardware, no cv2 GUI).
 
-Importing ``chess_assistant.calibration`` must not require ``reachy_mini`` — the robot import is
+Importing ``chess_commentator.calibration`` must not require ``reachy_mini`` — the robot import is
 lazy — so these run even without the ``robot`` group (though the suite installs it anyway).
 """
 
 import numpy as np
 import pytest
 
-from chess_assistant.calibration import (
+from chess_commentator.calibration import (
     build_calibration_metadata,
     build_inspector_calibration,
     compute_inspector_results,
@@ -93,7 +93,7 @@ def test_build_calibration_metadata_records_unmeasured_center():
 
 
 def test_build_calibration_metadata_round_trips_through_processor():
-    from chess_assistant.image_processing import Processor
+    from chess_commentator.image_processing import Processor
 
     # Extended points converge at an apex above the board (so V is well-defined).
     apex = np.array([960.0, -600.0])

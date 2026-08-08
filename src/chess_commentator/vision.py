@@ -47,10 +47,10 @@ import numpy as np
 
 from omegaconf import OmegaConf, DictConfig
 
-from chess_assistant.config import SQUARES, PIECES
-from chess_assistant.model.config import TARGET_MAP, reconstruct_13way_logprobs, TOP_LEFT_OHE_MAP
-from chess_assistant.model.data import EVAL_TRANSFORM
-from chess_assistant.model.model import SquareClassifierMultiHead
+from chess_commentator.config import SQUARES, PIECES
+from chess_commentator.model.config import TARGET_MAP, reconstruct_13way_logprobs, TOP_LEFT_OHE_MAP
+from chess_commentator.model.data import EVAL_TRANSFORM
+from chess_commentator.model.model import SquareClassifierMultiHead
 
 load_dotenv()
 
@@ -822,7 +822,7 @@ if __name__ == "__main__":
     # is standing on each square. Useful when the board estimate disagrees with reality and you
     # want to see whether the model is confidently wrong or merely unsure.
     #
-    #   uv run python -m chess_assistant.vision \
+    #   uv run python -m chess_commentator.vision \
     #       data/generated/2026-07-01_175334/board_2026-07-01_175602/squares --squares a1 e4
     import argparse
     import math

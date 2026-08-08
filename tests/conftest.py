@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from chess_assistant.config import SQUARES
+from chess_commentator.config import SQUARES
 
 
 def _intersect(p1, p2, p3, p4):
@@ -45,7 +45,7 @@ def build_v2_metadata(apex=(960.0, -600.0), s=0.18, with_intrinsics=False):
         "extended_center_px": extended_center,
     }
     if with_intrinsics:
-        from chess_assistant.camera_utils import get_lite_camera_KD
+        from chess_commentator.camera_utils import get_lite_camera_KD
 
         K, D = get_lite_camera_KD((1920, 1080))
         metadata["camera_intrinsics"] = {

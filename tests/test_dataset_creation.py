@@ -10,8 +10,8 @@ import torch
 from torchvision.transforms import v2
 from torchvision import tv_tensors
 
-from chess_assistant.model.data import create_dataloader, squareDataset, TRAIN_TRANSFORM, EVAL_TRANSFORM
-from chess_assistant.model.config import INVERSE_COLOR_MAP, INVERSE_TYPE_MAP
+from chess_commentator.model.data import create_dataloader, squareDataset, TRAIN_TRANSFORM, EVAL_TRANSFORM
+from chess_commentator.model.config import INVERSE_COLOR_MAP, INVERSE_TYPE_MAP
 
 # The generated dataset is gitignored, so skip rather than fail wherever it is absent (CI, a
 # fresh clone).

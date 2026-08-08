@@ -1,6 +1,6 @@
 """Data-generation tool for the chess vision classifier.
 
-Run with ``uv run python -m chess_assistant.data_generation [--center]``. Needs the robot and a
+Run with ``uv run python -m chess_commentator.data_generation [--center]``. Needs the robot and a
 display; calibration starts automatically on launch.
 
 Workflow:
@@ -10,7 +10,7 @@ Workflow:
 3. You make the *same* change on the real physical board.
 4. You press Space; the robot captures a photo.
 5. The photo is warped and cut into 64 square cutouts by the existing
-   :class:`~chess_assistant.image_processing.Processor`.
+   :class:`~chess_commentator.image_processing.Processor`.
 6. The virtual board is the source of truth for the label of every square.
 7. Labels are written into each square's metadata JSON, a per-image
    ``metadata.json`` is saved, and 64 rows are appended to the master CSV.
@@ -75,10 +75,10 @@ from reachy_mini import ReachyMini
 
 import chess
 
-from chess_assistant.calibration import calibrate
-from chess_assistant.camera import capture_image
-from chess_assistant.config import SQUARES
-from chess_assistant.image_processing import Processor
+from chess_commentator.calibration import calibrate
+from chess_commentator.camera import capture_image
+from chess_commentator.config import SQUARES
+from chess_commentator.image_processing import Processor
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -273,7 +273,7 @@ class DataGenerationSession:
         self.data_root = Path(data_root)
         self.csv_path = self.data_root / CSV_NAME
         # When True, calibration measures the extended centre point (click it); otherwise the
-        # centre is interpolated from the 4 corners. See chess_assistant.calibration.CalibrationUI.
+        # centre is interpolated from the 4 corners. See chess_commentator.calibration.CalibrationUI.
         self.annotate_center = annotate_center
 
         # Set once a setup has been calibrated.
@@ -861,7 +861,7 @@ def generate_data(
 
 
 if __name__ == "__main__":
-    # Usage: uv run python -m chess_assistant.data_generation [--center]
+    # Usage: uv run python -m chess_commentator.data_generation [--center]
     #
     # Opens the virtual board against the default config (config.yaml) and data root
     # (data/generated), and calibrates a first setup straight away. Pass --center to click the

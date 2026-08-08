@@ -11,7 +11,7 @@ from reachy_mini import ReachyMini
 
 from dotenv import load_dotenv
 
-from chess_assistant.speech_clips import (
+from chess_commentator.speech_clips import (
     CLIP_CACHE_DIR,
     DEFAULT_SPLICE_GAP_MS,
     KOKORO_SAMPLE_RATE,
@@ -295,7 +295,7 @@ class Speaker:
         print(f"speech: {len(missing)}/{len(expected)} clips missing for {self.voice}.")
         print("speech: falling back to live synthesis (~2.2s per suggestion). To remove that "
               "latency, run:")
-        print(f"speech:   uv run python -m chess_assistant.pregenerate_speech --voice {self.voice}")
+        print(f"speech:   uv run python -m chess_commentator.pregenerate_speech --voice {self.voice}")
 
     def _synthesize(self, text: str) -> np.ndarray:
         with self.pipeline_lock:

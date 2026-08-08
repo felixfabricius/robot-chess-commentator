@@ -1,11 +1,11 @@
 # Model weights
 
 `model_state_dict.safetensors` — the trained board-reading CNN used by `BoardEstimator`
-(`src/chess_assistant/vision.py`), pointed at by `vision.model_weights_path` in `config.yaml`.
+(`src/chess_commentator/vision.py`), pointed at by `vision.model_weights_path` in `config.yaml`.
 
 | | |
 | --- | --- |
-| Architecture | `SquareClassifierMultiHead` (`src/chess_assistant/model/model.py`) |
+| Architecture | `SquareClassifierMultiHead` (`src/chess_commentator/model/model.py`) |
 | Parameters | 330,075 (1.32 MB, fp32) |
 | Input | 4×144×144 (RGB + square mask) plus a 4-dim one-hot of which board corner is top-left |
 | Output | three heads — `empty` (1 logit), `color` (2), `type` (6) — recombined into 13-way log-probs by `reconstruct_13way_logprobs` |

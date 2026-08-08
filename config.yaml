@@ -47,14 +47,14 @@ speaker:
   max_tokens: 64
   # Kokoro's first letter picks the language, so "bm_*" is British and "am_*" American.
   # Changing this invalidates the pregenerated move-announcement clips: re-run
-  # `uv run python -m chess_assistant.pregenerate_speech` or the robot falls back to
+  # `uv run python -m chess_commentator.pregenerate_speech` or the robot falls back to
   # synthesizing every suggestion live (~2.2s each).
   voice: bm_george
   recent_moves: 6
   recent_cp_losses: 5
   splice_gap_ms: 60   # silence between the pregenerated clips of a move suggestion
                       # ("E2 to," + "E4?"). Tune by ear: uv run python -m
-                      # chess_assistant.audition_speech --sweep
+                      # chess_commentator.audition_speech --sweep
   # The closing roast is 3-4 sentences, not a one-liner, so it gets its own cap.
   # ~60 words is ~110 tokens; 200 leaves headroom without licensing a monologue.
   outro:

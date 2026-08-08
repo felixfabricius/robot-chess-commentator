@@ -8,17 +8,17 @@ import sys
 import torch
 from pathlib import Path
 
-import chess_assistant
-from chess_assistant.image_processing import Processor
-from chess_assistant.vision import BoardEstimate, BoardEstimator
-from chess_assistant.game import ChessGame
-from chess_assistant.config import PIECES, SQUARES, PIECE_DISPLAY
+import chess_commentator
+from chess_commentator.image_processing import Processor
+from chess_commentator.vision import BoardEstimate, BoardEstimator
+from chess_commentator.game import ChessGame
+from chess_commentator.config import PIECES, SQUARES, PIECE_DISPLAY
 
 # Anchor every path to the repo root rather than the working directory, so the demo behaves
-# identically wherever it is launched from. chess_assistant is installed from
-# <repo>/src/chess_assistant, so its __file__ locates the repo without relying on __file__ of
+# identically wherever it is launched from. chess_commentator is installed from
+# <repo>/src/chess_commentator, so its __file__ locates the repo without relying on __file__ of
 # this script (which is not defined when cells are run interactively).
-REPO_ROOT = Path(chess_assistant.__file__).resolve().parents[2]
+REPO_ROOT = Path(chess_commentator.__file__).resolve().parents[2]
 WEIGHTS_PATH = REPO_ROOT / "weights" / "model_state_dict.safetensors"
 OUT_DIR = REPO_ROOT / "demo" / "out" / "setup_1"
 

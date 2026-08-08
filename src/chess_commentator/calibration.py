@@ -28,8 +28,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from chess_assistant.camera_utils import build_undistort_maps, get_lite_camera_KD, undistort
-from chess_assistant.config import SQUARES
+from chess_commentator.camera_utils import build_undistort_maps, get_lite_camera_KD, undistort
+from chess_commentator.config import SQUARES
 
 # reachy_mini (the `robot` dependency group) is imported lazily inside the functions that need
 # the live robot, so the pure calibration helpers below stay importable without it.
@@ -169,7 +169,7 @@ def _log_calibration_summary(calibration_data: dict, config_path) -> None:
     ``Processor.__init__``). A large residual usually means an extended point was mis-clicked.
     """
     try:
-        from chess_assistant.image_processing import Processor
+        from chess_commentator.image_processing import Processor
 
         processor = Processor(calibration_data, config_path)
         print(f"Vanishing-point residual: {processor.vp_residual:.3f} px")
@@ -505,7 +505,7 @@ def compute_inspector_results(calibration_dict, config_path="config.yaml") -> li
     Pure/headless (no cv2 GUI); runs in a background thread during review so each square's box
     can be drawn directly on the full undistorted frame the user clicked on.
     """
-    from chess_assistant.image_processing import Processor
+    from chess_commentator.image_processing import Processor
 
     processor = Processor(calibration_dict, config_path)
     inv = np.linalg.inv(processor.matrix)
@@ -820,7 +820,7 @@ def annotate_existing(
     corner/centre/intrinsics fields are (re)written on the undistorted frame.
 
     Usage:
-        python -m chess_assistant.calibration data/generated/<setup>/raw.png
+        python -m chess_commentator.calibration data/generated/<setup>/raw.png
     """
     image_path = Path(image_path)
     if not image_path.exists():

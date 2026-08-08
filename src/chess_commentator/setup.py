@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-from chess_assistant.calibration import calibrate, position_robot
+from chess_commentator.calibration import calibrate, position_robot
 
 def setup(mini, mode):
     """

@@ -5,7 +5,7 @@ head targets, and reconstruct_13way_logprobs putting the heads back together aga
 import torch
 from torch import nn
 
-from chess_assistant.model.config import (
+from chess_commentator.model.config import (
     TARGET_MAP,
     IGNORE_INDEX,
     decompose_label,

@@ -3,8 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from chess_assistant.config import SQUARES
-from chess_assistant.speech_clips import (
+from chess_commentator.config import SQUARES
+from chess_commentator.speech_clips import (
     KOKORO_SAMPLE_RATE,
     PROMOTION_SQUARES,
     announcement_parts,

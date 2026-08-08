@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from chess_assistant.regenerate import (
+from chess_commentator.regenerate import (
     _print_progress,
     iter_frames,
     read_existing_labels,

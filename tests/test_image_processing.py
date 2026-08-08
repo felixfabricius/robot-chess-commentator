@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from chess_assistant.image_processing import (
+from chess_commentator.image_processing import (
     CROP_MODES,
     MASK_MODES,
     MASK_VARIANTS,
@@ -195,7 +195,7 @@ def test_extension_follows_clicks_even_when_vanishing_point_flips():
     # Divergent piece-height rays: the least-squares V lands on the wrong side, so the OLD
     # `unit(V - corner)` direction would point away from the clicked tops. The displacement
     # field must still reproduce the measured extensions exactly at the corners.
-    from chess_assistant.calibration import infer_camera_natural_corner_order
+    from chess_commentator.calibration import infer_camera_natural_corner_order
 
     actual = {"a8": [500, 800], "h8": [1400, 800], "h1": [1400, 300], "a1": [500, 300]}
     extended = {"a8": [380, 720], "h8": [1520, 720], "h1": [1520, 230], "a1": [380, 230]}

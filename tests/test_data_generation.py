@@ -8,8 +8,8 @@ import csv
 
 import chess
 
-from chess_assistant.config import SQUARES
-from chess_assistant.data_generation import (
+from chess_commentator.config import SQUARES
+from chess_commentator.data_generation import (
     CSV_COLUMNS,
     DataGenerationSession,
     append_rows_to_csv,
@@ -212,7 +212,7 @@ def _patch_hardware(monkeypatch):
     signature drifts again -- fails loudly here rather than being silently swallowed by a
     ``lambda *a, **k`` that accepts anything.
     """
-    import chess_assistant.data_generation as dg
+    import chess_commentator.data_generation as dg
     from unittest.mock import create_autospec
 
     monkeypatch.setattr(
@@ -254,7 +254,7 @@ def test_recalibrate_reset_board_true_starts_fresh(tmp_path, monkeypatch):
 
 
 def test_failed_calibration_does_not_change_board(tmp_path, monkeypatch):
-    import chess_assistant.data_generation as dg
+    import chess_commentator.data_generation as dg
 
     session = _session(tmp_path)
     session.apply_legal_move("e2", "e4")
@@ -268,7 +268,7 @@ def test_failed_calibration_does_not_change_board(tmp_path, monkeypatch):
 
 
 def test_annotate_center_flag_passed_to_calibrate(tmp_path, monkeypatch):
-    import chess_assistant.data_generation as dg
+    import chess_commentator.data_generation as dg
 
     calls = []
     monkeypatch.setattr(dg, "calibrate", lambda *a, **k: (calls.append((a, k)), {"stub": True})[1])

@@ -25,7 +25,7 @@ from pathlib import Path
 import anthropic
 import polars as pl
 
-from chess_assistant.vision import (
+from chess_commentator.vision import (
     _MOVE_SCHEMA,
     _BOARD_SCHEMA,
     _FEN_WHOLE_SCHEMA,

@@ -1,8 +1,8 @@
 """Training entry point: Hydra for the config, Weights & Biases for the logging.
 
-    uv run python -m chess_assistant.model.main
-    uv run python -m chess_assistant.model.main model=2 training.epochs=10
-    uv run python -m chess_assistant.model.main +debug=true
+    uv run python -m chess_commentator.model.main
+    uv run python -m chess_commentator.model.main model=2 training.epochs=10
+    uv run python -m chess_commentator.model.main +debug=true
 
 Defaults live in model/config.yaml and any of them can be overridden on the command line.
 `debug` and `prefix` are the exception: they are not in config.yaml, and Hydra's struct mode
@@ -24,16 +24,16 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 from dotenv import load_dotenv
 
-from chess_assistant.model.model import SquareClassifier, SquareClassifier2, SquareClassifierMultiHead
-from chess_assistant.model.data import create_dataloader
-from chess_assistant.model.train import train
-from chess_assistant.model.evaluate import evaluate
-from chess_assistant.model.config import (
+from chess_commentator.model.model import SquareClassifier, SquareClassifier2, SquareClassifierMultiHead
+from chess_commentator.model.data import create_dataloader
+from chess_commentator.model.train import train
+from chess_commentator.model.evaluate import evaluate
+from chess_commentator.model.config import (
     decompose_label,
     IGNORE_INDEX,
     log_prior_from_label_counts,
 )
-from chess_assistant.image_processing import MASK_VARIANTS
+from chess_commentator.image_processing import MASK_VARIANTS
 
 load_dotenv() # for api keys
 
@@ -148,6 +148,10 @@ def main(config: DictConfig):
         )
     run_notes = " ".join(note_parts) if note_parts else None
     run = wandb.init(
+        # Deliberately still the old repo name: this is a remote W&B identifier, not a local one.
+        # Renaming it here would start a fresh, empty project and orphan every existing run,
+        # including the ones experiment.ipynb links to by URL. Rename it in the W&B UI first if
+        # it ever needs to change -- that migrates the history instead of abandoning it.
         project="chess-assistant",
         name=run_name,
         notes=run_notes,

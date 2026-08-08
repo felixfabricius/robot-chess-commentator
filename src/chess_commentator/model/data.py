@@ -15,7 +15,7 @@ from torchvision.transforms import v2
 
 from pathlib import Path, PureWindowsPath
 
-from chess_assistant.model.config import decompose_label, TOP_LEFT_OHE_MAP
+from chess_commentator.model.config import decompose_label, TOP_LEFT_OHE_MAP
 
 TRAIN_TRANSFORM = v2.Compose([
     v2.ToImage(), 

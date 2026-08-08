@@ -16,8 +16,8 @@ import chess.engine
 import torch
 from torch import nn
 
-from chess_assistant.config import SQUARES
-from chess_assistant.model.config import TARGET_MAP, INVERSE_TARGET_MAP
+from chess_commentator.config import SQUARES
+from chess_commentator.model.config import TARGET_MAP, INVERSE_TARGET_MAP
 
 
 def _is_executable(path: Path) -> bool:

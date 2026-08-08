@@ -1,5 +1,5 @@
 [project]
-name = "chess-assistant"
+name = "robot-chess-commentator"
 version = "0.1.0"
 description = "A Reachy Mini robot that watches a physical chess game, reads the board from one photo, and commentates out loud."
 readme = "README.md"
@@ -52,7 +52,7 @@ build-backend = "hatchling.build"
 # the package directory from `project.name`. Keeping this explicit is what lets the directory and
 # the distribution be renamed independently instead of having to move in lockstep.
 [tool.hatch.build.targets.wheel]
-packages = ["src/chess_assistant"]
+packages = ["src/chess_commentator"]
 
 [tool.ruff]
 line-length = 110

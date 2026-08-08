@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import torch
 import time
-from chess_assistant.model.data import create_dataloader
-from chess_assistant.model.model import SquareClassifier, SquareClassifierMultiHead
+from chess_commentator.model.data import create_dataloader
+from chess_commentator.model.model import SquareClassifier, SquareClassifierMultiHead
 
 # The generated dataset is gitignored, so skip rather than fail wherever it is absent (CI, a
 # fresh clone).

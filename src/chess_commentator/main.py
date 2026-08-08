@@ -3,7 +3,7 @@ The game loop: the robot watches a physical chess game and comments on it.
 
 Run it with the robot plugged in:
 
-    uv run python -m chess_assistant.main
+    uv run python -m chess_commentator.main
 
 One iteration = one move: wait for the players to signal that they have moved, photograph the
 board, read the position, rank the legal moves against that reading, suggest the most likely
@@ -13,16 +13,16 @@ needs (calibration, engine, voice, input method) is configured in config.yaml.
 from pathlib import Path
 from omegaconf import OmegaConf
 
-from chess_assistant.setup import setup
-from chess_assistant.camera import capture_image
-from chess_assistant.vision import BoardEstimator
-from chess_assistant.game import ChessGame
-from chess_assistant.image_processing import Processor
-from chess_assistant.input import InputDetector
-from chess_assistant.robot import Speaker
-from chess_assistant.outro import finale
-from chess_assistant.calibration import make_head_rigid, move_to_capture_pose
-from chess_assistant.calibration_monitor import launch_calibration_monitor
+from chess_commentator.setup import setup
+from chess_commentator.camera import capture_image
+from chess_commentator.vision import BoardEstimator
+from chess_commentator.game import ChessGame
+from chess_commentator.image_processing import Processor
+from chess_commentator.input import InputDetector
+from chess_commentator.robot import Speaker
+from chess_commentator.outro import finale
+from chess_commentator.calibration import make_head_rigid, move_to_capture_pose
+from chess_commentator.calibration_monitor import launch_calibration_monitor
 
 from reachy_mini import ReachyMini
 

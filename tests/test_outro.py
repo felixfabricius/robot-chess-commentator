@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from chess_assistant import outro
-from chess_assistant.outro import dance_until, finale, load_move
+from chess_commentator import outro
+from chess_commentator.outro import dance_until, finale, load_move
 
 
 class FakeMini:

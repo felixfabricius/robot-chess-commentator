@@ -7,7 +7,7 @@ plumbing they rely on.
 import chess
 import pytest
 
-from chess_assistant.vision import (
+from chess_commentator.vision import (
     board_to_labels,
     fen_board_to_labels,
     first_legal_and_stats,

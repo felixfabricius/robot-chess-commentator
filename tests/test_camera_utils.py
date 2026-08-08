@@ -7,7 +7,7 @@ group: ``uv sync --group robot``); the constants module is pure numpy and import
 import numpy as np
 import pytest
 
-from chess_assistant.camera_utils import (
+from chess_commentator.camera_utils import (
     build_undistort_maps,
     get_lite_camera_KD,
     undistort,
