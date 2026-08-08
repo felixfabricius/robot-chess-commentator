@@ -3,6 +3,8 @@ training loop relies on, and the guarantee that the augmentation pipeline leaves
 alone. Needs the generated dataset (data/generated/data.csv) on disk.
 """
 
+from pathlib import Path
+
 import pytest
 import torch
 from torchvision.transforms import v2
@@ -10,6 +12,13 @@ from torchvision import tv_tensors
 
 from chess_assistant.model.data import create_dataloader, squareDataset, TRAIN_TRANSFORM, EVAL_TRANSFORM
 from chess_assistant.model.config import INVERSE_COLOR_MAP, INVERSE_TYPE_MAP
+
+# The generated dataset is gitignored, so skip rather than fail wherever it is absent (CI, a
+# fresh clone).
+pytestmark = pytest.mark.skipif(
+    not Path("data/generated/data.csv").exists(),
+    reason="needs the generated dataset (data/generated/data.csv), which is not in git",
+)
 
 @pytest.fixture
 def dataset(scope="module"):

@@ -6,7 +6,6 @@ ONE_EXAMPLE_ONLY = True
 import json
 import sys
 import torch
-import numpy as np # TODO: remove again
 from pathlib import Path
 
 import chess_assistant

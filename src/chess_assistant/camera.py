@@ -5,7 +5,6 @@ from pathlib import Path
 from datetime import datetime
 
 import cv2
-from reachy_mini import ReachyMini
 
 def capture_image(mini, output_dir: Path) -> Path:
     """

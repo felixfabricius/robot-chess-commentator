@@ -7,7 +7,6 @@ require a display / hardware. Everything tested here is import-light.
 import csv
 
 import chess
-import pytest
 
 from chess_assistant.config import SQUARES
 from chess_assistant.data_generation import (

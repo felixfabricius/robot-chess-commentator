@@ -13,6 +13,13 @@ SQUARE_IMAGE_PATH = Path("data/generated/2026-07-01_175334/board_2026-07-01_1756
 SQUARES_DIR = SQUARE_IMAGE_PATH.parent.parent
 CONFIG_PATH = Path("config.yaml")
 
+# These run against one specific recorded capture, which lives in the gitignored data tree rather
+# than in the repo. Skip rather than fail wherever it is absent (CI, a fresh clone).
+pytestmark = pytest.mark.skipif(
+    not SQUARE_IMAGE_PATH.exists(),
+    reason=f"needs the recorded capture at {SQUARES_DIR} (not in git)",
+)
+
 
 ### Structural tests: an untrained multi-head model is enough to exercise the plumbing.
 @pytest.fixture(scope="module")
