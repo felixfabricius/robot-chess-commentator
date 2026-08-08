@@ -281,7 +281,11 @@ def _with_reasoning_field(schema: dict) -> dict:
     }
 
 
-def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="none", max_tokens=1024):
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="none",
+                          max_tokens=1024, effort="medium"):
     """Assemble the kwargs dict for one Claude structured-output call. Shared by the synchronous
     path (`_call_claude`) and the batch path (the evaluation harness builds a request per call from
     this), so both send byte-identical requests and only the transport differs. Applies the
@@ -290,7 +294,13 @@ def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="
       - "text":     a visible `reasoning` field is added to the schema and filled before the answer;
                     `max_tokens` floored at 4096, thinking disabled.
       - "thinking": adaptive thinking (hidden), same structured final answer; `max_tokens` floored
-                    at 8192.
+                    at 8192, and `effort` sent to bound how much it thinks.
+
+    `effort` ("low".."max") tunes thinking depth / total token spend. It is sent ONLY in "thinking"
+    mode -- that is where runaway thinking eats the whole max_tokens budget and truncates the answer,
+    and confining it there also sidesteps the 400 Opus 5 returns for disabled-thinking + xhigh/max
+    effort (adaptive thinking has no separate thinking budget on current models -- `budget_tokens`
+    is rejected -- so lowering effort is the lever for shorter, cheaper thinking).
 
     Hidden thinking is set EXPLICITLY, never left to the model default: some models (e.g. Sonnet 5)
     run adaptive thinking whenever `thinking` is omitted, and that thinking shares the max_tokens
@@ -299,6 +309,7 @@ def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="
     budget with the (tiny) answer, hence the raised floors.
     """
     assert reasoning in ("none", "text", "thinking")
+    assert effort in EFFORT_LEVELS
     schema = _with_reasoning_field(answer_schema) if reasoning == "text" else answer_schema
     if reasoning == "text":
         prompt = prompt + "\nFirst reason step by step in the `reasoning` field, then fill in the answer."
@@ -307,12 +318,16 @@ def _build_message_params(model, image_paths, prompt, answer_schema, reasoning="
         max_tokens = max(max_tokens, 8192)
     thinking = {"type": "adaptive"} if reasoning == "thinking" else {"type": "disabled"}
 
+    output_config = {"format": {"type": "json_schema", "schema": schema}}
+    if reasoning == "thinking":
+        output_config["effort"] = effort
+
     content = [_image_block(p) for p in image_paths] + [{"type": "text", "text": prompt}]
     return {
         "model": model,
         "max_tokens": max_tokens,
         "thinking": thinking,
-        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        "output_config": output_config,
         "messages": [{"role": "user", "content": content}],
     }
 
@@ -344,13 +359,15 @@ def parse_message(message) -> dict:
         ) from exc
 
 
-def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="none", max_tokens=1024):
+def _call_claude(client, model, image_paths, prompt, answer_schema, reasoning="none",
+                 max_tokens=1024, effort="medium"):
     """One synchronous Claude call with a structured (json_schema) answer. Returns
     (parsed, usage, elapsed): `parsed` is the JSON object matching `answer_schema` (plus a
     `reasoning` key when reasoning == "text"), `usage` is the token usage (for cost), `elapsed` is
-    wall-clock seconds for this call (for timing). See `_build_message_params` for the reasoning
-    knob. A max_tokens truncation / unparseable answer raises LLMResponseError (with `elapsed` set)."""
-    params = _build_message_params(model, image_paths, prompt, answer_schema, reasoning, max_tokens)
+    wall-clock seconds for this call (for timing). See `_build_message_params` for the reasoning /
+    effort knobs. A max_tokens truncation / unparseable answer raises LLMResponseError (with
+    `elapsed` set)."""
+    params = _build_message_params(model, image_paths, prompt, answer_schema, reasoning, max_tokens, effort)
 
     start = time.monotonic()
     if reasoning == "thinking":
@@ -595,34 +612,34 @@ def parsed_to_square_estimate(llm_method, parsed, image_path=None) -> SquareEsti
     return square_estimate
 
 
-def build_square_params(llm_method, annotated_image_path, model, prompt_version=1, reasoning="none"):
+def build_square_params(llm_method, annotated_image_path, model, prompt_version=1, reasoning="none", effort="medium"):
     """Request params for one square classification (method iii/iv). `annotated_image_path` is the
     marked-up crop the square prompt refers to (the `_annotated` PNG)."""
     schema = _SQUARE_LABEL_SCHEMA if llm_method == "square_label" else _SQUARE_LOGITS_SCHEMA
     return _build_message_params(
         model, [annotated_image_path], PROMPTS[llm_method][prompt_version], schema,
-        reasoning=reasoning, max_tokens=_SQUARE_MAX_TOKENS[llm_method],
+        reasoning=reasoning, max_tokens=_SQUARE_MAX_TOKENS[llm_method], effort=effort,
     )
 
 
-def build_move_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none"):
+def build_move_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none", effort="medium"):
     """Request params for method i (ordered candidate moves). Score the response with
     `_collect_slots(parsed, "move")` + `first_legal_and_stats(kind="move")`."""
     prompt = _previous_position_prompt(PROMPTS["move"][prompt_version], previous_fen, corner_map)
-    return _build_message_params(model, [warped_image_path], prompt, _MOVE_SCHEMA, reasoning=reasoning)
+    return _build_message_params(model, [warped_image_path], prompt, _MOVE_SCHEMA, reasoning=reasoning, effort=effort)
 
 
-def build_board_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none"):
+def build_board_params(warped_image_path, previous_fen, corner_map, model, prompt_version=1, reasoning="none", effort="medium"):
     """Request params for method ii (ordered candidate positions). Score with
     `_collect_slots(parsed, "board")` + `first_legal_and_stats(kind="board")`."""
     prompt = _previous_position_prompt(PROMPTS["board"][prompt_version], previous_fen, corner_map)
-    return _build_message_params(model, [warped_image_path], prompt, _BOARD_SCHEMA, reasoning=reasoning)
+    return _build_message_params(model, [warped_image_path], prompt, _BOARD_SCHEMA, reasoning=reasoning, effort=effort)
 
 
-def build_fen_whole_params(image_path, corner_map, model, prompt_version=1, reasoning="none"):
+def build_fen_whole_params(image_path, corner_map, model, prompt_version=1, reasoning="none", effort="medium"):
     """Request params for the whole-board FEN baseline. Score with `parsed["fen_board"]`."""
     prompt = PROMPTS["fen_whole"][prompt_version].format(orientation=_orientation_sentence(corner_map))
-    return _build_message_params(model, [image_path], prompt, _FEN_WHOLE_SCHEMA, reasoning=reasoning)
+    return _build_message_params(model, [image_path], prompt, _FEN_WHOLE_SCHEMA, reasoning=reasoning, effort=effort)
 
 
 class BoardEstimator:

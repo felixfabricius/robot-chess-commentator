@@ -66,6 +66,7 @@ from chess_assistant.game import ChessGame
 from chess_assistant.vision import (
     BoardEstimate,
     BoardEstimator,
+    EFFORT_LEVELS,
     LLMResponseError,
     SquareEstimate,
     build_board_params,
@@ -234,7 +235,7 @@ def _score_batched_board(method, board_id, df_setup, parsed_by_cid, model_versio
     if method in ("square_label", "square_logits"):
         board_estimate = BoardEstimate()
         for square in SQUARES:
-            entry = parsed_by_cid.get(f"{board_id}/{square}")
+            entry = parsed_by_cid.get(_square_custom_id(board_id, square))
             if entry is not None and entry["parsed"] is not None:
                 setattr(board_estimate, square, parsed_to_square_estimate(method, entry["parsed"]))
             else:
@@ -260,7 +261,7 @@ def _score_batched_board(method, board_id, df_setup, parsed_by_cid, model_versio
     return record
 
 
-def _setup_row(method, model_version, prompt_version, reasoning, prior_correction, data_path,
+def _setup_row(method, model_version, prompt_version, reasoning, prior_correction, effort, data_path,
                split, setup_id, metrics):
     """One output row for a (split, setup): identifier columns, then per-metric JSON list + mean."""
     row = {
@@ -269,6 +270,7 @@ def _setup_row(method, model_version, prompt_version, reasoning, prior_correctio
         "prompt_version": prompt_version,
         "reasoning": reasoning,
         "prior_correction": prior_correction,
+        "effort": effort,
         "data_path": Path(data_path).as_posix(),
         "split": split,
         "setup_id": setup_id,
@@ -284,10 +286,12 @@ def _setup_row(method, model_version, prompt_version, reasoning, prior_correctio
 
 # Identifier columns written by _setup_row that define "this run's configuration": two runs with
 # the same values here, at the same (split, setup), are the same generation -- so resume skips them.
-_CONFIG_COLS = ("method", "model_version", "prompt_version", "reasoning", "prior_correction")
+# `effort` only bites in thinking mode, so non-thinking runs record the API default "high" (see
+# main); an older CSV without the column is backfilled to "high" so its runs still match.
+_CONFIG_COLS = ("method", "model_version", "prompt_version", "reasoning", "prior_correction", "effort")
 
 
-def _config_expr(method, model_version, prompt_version, reasoning, prior_correction):
+def _config_expr(method, model_version, prompt_version, reasoning, prior_correction, effort):
     """Polars boolean expression selecting rows produced by this run's configuration."""
     return (
         (pl.col("method") == method)
@@ -295,16 +299,17 @@ def _config_expr(method, model_version, prompt_version, reasoning, prior_correct
         & (pl.col("prompt_version") == prompt_version)
         & (pl.col("reasoning") == reasoning)
         & (pl.col("prior_correction") == prior_correction)
+        & (pl.col("effort") == effort)
     )
 
 
-def _done_setups(existing, method, model_version, prompt_version, reasoning, prior_correction):
+def _done_setups(existing, method, model_version, prompt_version, reasoning, prior_correction, effort):
     """The set of (split, setup_id) already present in `existing` for this run's configuration.
     Empty if `existing` is None or lacks the identifier columns (e.g. a foreign/empty CSV)."""
     if existing is None or not (set(_CONFIG_COLS) | {"split", "setup_id"}) <= set(existing.columns):
         return set()
     match = existing.filter(
-        _config_expr(method, model_version, prompt_version, reasoning, prior_correction)
+        _config_expr(method, model_version, prompt_version, reasoning, prior_correction, effort)
     )
     return set(zip(match["split"].to_list(), match["setup_id"].to_list()))
 
@@ -330,11 +335,18 @@ def _load_setup(data, split, setup_id):
     return df_setup, corner_map
 
 
+def _square_custom_id(board_id, square):
+    """Batch custom_ids must match ^[a-zA-Z0-9_-]{1,64}$, so the square methods join board and
+    square with '_' (a '/' is rejected). board_ids already contain '_'/'-', but the id is never
+    split back apart -- only rebuilt to look results up -- so the ambiguity is harmless."""
+    return f"{board_id}_{square}"
+
+
 def _setup_requests(method, df_setup, data_root, setup_id, corner_map,
-                    model_version, prompt_version, reasoning):
+                    model_version, prompt_version, reasoning, effort):
     """Yield (custom_id, params) for every Claude call a VLM method needs over this setup's boards.
     The custom_id locates the answer for scoring: '<board_id>' for the whole-image methods,
-    '<board_id>/<square>' for the square methods (unique within the setup's batch(es))."""
+    '<board_id>_<square>' for the square methods (unique within the setup's batch(es))."""
     board_ids = sorted(df_setup["image_id"].unique().to_list())
     for board_id in board_ids:
         df_board = df_setup.filter(pl.col("image_id") == board_id)
@@ -345,20 +357,20 @@ def _setup_requests(method, df_setup, data_root, setup_id, corner_map,
             for square in SQUARES:
                 base = board_dir / "squares" / square / f"{square}.png"
                 annotated = base.parent / (base.stem + "_annotated" + base.suffix)
-                yield f"{board_id}/{square}", build_square_params(
-                    method, annotated, model_version, prompt_version, reasoning
+                yield _square_custom_id(board_id, square), build_square_params(
+                    method, annotated, model_version, prompt_version, reasoning, effort
                 )
         elif method == "move":
             yield board_id, build_move_params(
-                warped, previous_fen, corner_map, model_version, prompt_version, reasoning
+                warped, previous_fen, corner_map, model_version, prompt_version, reasoning, effort
             )
         elif method == "board":
             yield board_id, build_board_params(
-                warped, previous_fen, corner_map, model_version, prompt_version, reasoning
+                warped, previous_fen, corner_map, model_version, prompt_version, reasoning, effort
             )
         else:  # fen_whole
             yield board_id, build_fen_whole_params(
-                warped, corner_map, model_version, prompt_version, reasoning
+                warped, corner_map, model_version, prompt_version, reasoning, effort
             )
 
 
@@ -412,8 +424,9 @@ def _collect_batches(client, batch_ids):
     return results
 
 
-def _config_key(method, model_version, prompt_version, reasoning, prior_correction):
-    return "|".join(str(v) for v in (method, model_version, prompt_version, reasoning, prior_correction))
+def _config_key(method, model_version, prompt_version, reasoning, prior_correction, effort):
+    return "|".join(str(v) for v in
+                    (method, model_version, prompt_version, reasoning, prior_correction, effort))
 
 
 def _sidecar_path(output_path):
@@ -435,7 +448,7 @@ def _save_sidecar(path, state):
 # --- Execution engines ---------------------------------------------------------------------------
 
 def _run_cnn(data, data_root, setup_jobs, base, cnn_estimator, method, model_version,
-             prompt_version, reasoning, prior_correction, data_path, output_path):
+             prompt_version, reasoning, prior_correction, effort, data_path, output_path):
     """Score the CNN locally, flushing after each setup so a Ctrl-C keeps completed setups."""
     new_rows = []
     for split, setup_id in tqdm(setup_jobs, desc="eval cnn", unit="setup"):
@@ -462,7 +475,7 @@ def _run_cnn(data, data_root, setup_jobs, base, cnn_estimator, method, model_ver
 
             if metrics["correct_board"]:  # skip a setup with no evaluable boards
                 new_rows.append(_setup_row(
-                    method, model_version, prompt_version, reasoning, prior_correction,
+                    method, model_version, prompt_version, reasoning, prior_correction, effort,
                     data_path, split, setup_id, metrics,
                 ))
                 _flush(output_path, base, new_rows)
@@ -476,35 +489,43 @@ def _run_cnn(data, data_root, setup_jobs, base, cnn_estimator, method, model_ver
 
 
 def _run_batch(data, data_root, setup_jobs, base, existing, client, method, model_version,
-               prompt_version, reasoning, prior_correction, data_path, output_path,
-               resume, no_wait, poll_interval):
+               prompt_version, reasoning, prior_correction, effort, data_path, output_path,
+               resume, no_wait, poll_interval, collect_only=False):
     """Submit each queued setup's requests to the Message Batches API (recording batch ids to the
     sidecar as they are created), then -- unless --no-wait -- poll each setup's batches to
-    completion, collect the results, score, and flush its row."""
+    completion, collect the results, score, and flush its row.
+
+    `collect_only` skips submission entirely: no batch is ever created, so there is zero risk of
+    resubmitting. It only collects setups whose batch ids are already on record in the sidecar; a
+    queued setup with nothing recorded is warned and skipped. Use it to gather outstanding results
+    safely."""
     sidecar_path = _sidecar_path(output_path)
     sidecar = _load_sidecar(sidecar_path)
     config_state = sidecar.setdefault(
-        _config_key(method, model_version, prompt_version, reasoning, prior_correction), {}
+        _config_key(method, model_version, prompt_version, reasoning, prior_correction, effort), {}
     )
 
     # Phase A -- submit: ensure every queued setup has batches. Persist ids immediately so a crash
-    # (or --no-wait) never loses or re-submits work already running server-side.
-    for split, setup_id in setup_jobs:
-        key = f"{split}/{setup_id}"
-        if not resume:
-            config_state.pop(key, None)  # --no-resume: forget any prior submission and resubmit
-        if key in config_state:
-            continue
-        df_setup, corner_map = _load_setup(data, split, setup_id)
-        requests = list(_setup_requests(
-            method, df_setup, data_root, setup_id, corner_map, model_version, prompt_version, reasoning
-        ))
-        batch_ids = [_create_batch(client, chunk) for chunk in _chunk_requests(requests)]
-        config_state[key] = {"batch_ids": batch_ids, "n_requests": len(requests)}
-        _save_sidecar(sidecar_path, sidecar)
-        print(f"submitted {key}: {len(requests)} request(s) in {len(batch_ids)} batch(es)")
+    # (or --no-wait) never loses or re-submits work already running server-side. Skipped entirely
+    # under collect_only, which never creates a batch.
+    if not collect_only:
+        for split, setup_id in setup_jobs:
+            key = f"{split}/{setup_id}"
+            if not resume:
+                config_state.pop(key, None)  # --no-resume: forget any prior submission and resubmit
+            if key in config_state:
+                continue
+            df_setup, corner_map = _load_setup(data, split, setup_id)
+            requests = list(_setup_requests(
+                method, df_setup, data_root, setup_id, corner_map,
+                model_version, prompt_version, reasoning, effort,
+            ))
+            batch_ids = [_create_batch(client, chunk) for chunk in _chunk_requests(requests)]
+            config_state[key] = {"batch_ids": batch_ids, "n_requests": len(requests)}
+            _save_sidecar(sidecar_path, sidecar)
+            print(f"submitted {key}: {len(requests)} request(s) in {len(batch_ids)} batch(es)")
 
-    if no_wait:
+    if no_wait and not collect_only:
         print("submitted; re-run without --no-wait to poll and collect once the batches finish.")
         return existing if existing is not None else pl.DataFrame([])
 
@@ -514,7 +535,12 @@ def _run_batch(data, data_root, setup_jobs, base, existing, client, method, mode
     new_rows = []
     try:
         for split, setup_id in tqdm(setup_jobs, desc=f"collect {method}", unit="setup"):
-            batch_ids = config_state[f"{split}/{setup_id}"]["batch_ids"]
+            entry = config_state.get(f"{split}/{setup_id}")
+            if entry is None:
+                # No batch on record -- only reachable under collect_only (submission never runs).
+                print(f"skip {split}/{setup_id}: no submitted batch on record")
+                continue
+            batch_ids = entry["batch_ids"]
             _await_batches(client, batch_ids, poll_interval)
             parsed_by_cid = _collect_batches(client, batch_ids)
 
@@ -528,7 +554,7 @@ def _run_batch(data, data_root, setup_jobs, base, existing, client, method, mode
 
             if metrics["correct_board"]:  # skip a setup with no evaluable boards
                 new_rows.append(_setup_row(
-                    method, model_version, prompt_version, reasoning, prior_correction,
+                    method, model_version, prompt_version, reasoning, prior_correction, effort,
                     data_path, split, setup_id, metrics,
                 ))
                 _flush(output_path, base, new_rows)
@@ -551,8 +577,10 @@ def main(
     splits: tuple[str, ...] = ("val", "test"),
     resume: bool = True,
     max_setups: int | None = None,
+    effort: str = "medium",
     no_wait: bool = False,
     poll_interval: int = 30,
+    collect_only: bool = False,
     data_path: Path = Path("data/generated/data.csv"),
     output_path: Path = Path("evaluation/results.csv"),
 ):
@@ -572,14 +600,25 @@ def main(
       configuration; re-run after an interruption and it continues where it stopped. `resume=False`
       regenerates and replaces those rows instead (and resubmits their batches).
     - `max_setups`: cap the number of *not-yet-done* setups generated this run (re-run to do more).
+    - `effort` ("low".."max", default "medium"): thinking depth for `reasoning="thinking"` -- lower
+      it to stop thinking from eating the whole token budget (and truncating the answer) and to cut
+      cost. It is a config dimension (recorded per row, part of resume identity) only in thinking
+      mode; other modes ignore it and record the API default "high".
     - `no_wait`: for the VLM methods, submit the batches and return without polling; a later re-run
       collects them. `poll_interval`: seconds between batch status checks while waiting.
+    - `collect_only`: never submit -- only gather results for setups already recorded in the
+      sidecar (a setup with nothing recorded is warned and skipped). Zero risk of resubmission.
 
     Progress is flushed to `output_path` after every completed setup, so an interruption keeps
     everything so far. The unit is one setup.
     """
     assert method in METHODS, f"method must be one of {METHODS}"
     assert set(splits) <= {"val", "test"}, f"splits must be a subset of val/test; got {splits}"
+    assert effort in EFFORT_LEVELS, f"effort must be one of {EFFORT_LEVELS}; got {effort}"
+    # `effort` is only sent in thinking mode (see vision._build_message_params), so a non-thinking
+    # run genuinely executes at the API default "high" -- record it as such so the requested flag
+    # never fragments the config identity of runs whose requests it didn't change.
+    effort = effort if reasoning == "thinking" else "high"
     data_path = Path(data_path)
     output_path = Path(output_path)
     data_root = data_path.parent
@@ -616,6 +655,10 @@ def main(
 
     # --- Resume / overwrite bookkeeping ---------------------------------------------------------
     existing = pl.read_csv(output_path) if output_path.exists() else None
+    if existing is not None and "effort" not in existing.columns:
+        # Rows written before `effort` existed ran at the API default -- backfill so they keep
+        # matching (and resume-skipping) their configuration instead of looking foreign.
+        existing = existing.with_columns(pl.lit("high").alias("effort"))
     have_identifier_cols = existing is not None and (
         (set(_CONFIG_COLS) | {"split", "setup_id"}) <= set(existing.columns)
     )
@@ -632,7 +675,7 @@ def main(
     base = existing  # rows to append onto; may have this-config rows dropped for an overwrite run
     if resume:
         done = _done_setups(
-            existing, method, model_version, prompt_version, reasoning, prior_correction
+            existing, method, model_version, prompt_version, reasoning, prior_correction, effort
         )
         n_before = len(setup_jobs)
         setup_jobs = [job for job in setup_jobs if job not in done]
@@ -648,7 +691,7 @@ def main(
         regen_keys = [f"{split}\x00{setup_id}" for split, setup_id in setup_jobs]
         base = existing.filter(
             ~(
-                _config_expr(method, model_version, prompt_version, reasoning, prior_correction)
+                _config_expr(method, model_version, prompt_version, reasoning, prior_correction, effort)
                 & pl.concat_str([pl.col("split"), pl.lit("\x00"), pl.col("setup_id")]).is_in(regen_keys)
             )
         )
@@ -660,12 +703,12 @@ def main(
     if method == "cnn":
         return _run_cnn(
             data, data_root, setup_jobs, base, cnn_estimator, method, model_version,
-            prompt_version, reasoning, prior_correction, data_path, output_path,
+            prompt_version, reasoning, prior_correction, effort, data_path, output_path,
         )
     return _run_batch(
         data, data_root, setup_jobs, base, existing, client, method, model_version,
-        prompt_version, reasoning, prior_correction, data_path, output_path,
-        resume, no_wait, poll_interval,
+        prompt_version, reasoning, prior_correction, effort, data_path, output_path,
+        resume, no_wait, poll_interval, collect_only,
     )
 
 
@@ -688,6 +731,9 @@ if __name__ == "__main__":
     #   # the second collects whatever has finished:
     #   uv run python -m chess_assistant.model.evaluation square_logits --no-wait
     #   uv run python -m chess_assistant.model.evaluation square_logits          # collect
+    #
+    #   # collect outstanding results only, never submitting (zero resubmission risk):
+    #   uv run python -m chess_assistant.model.evaluation square_logits --splits val --collect-only
     #
     # The VLM methods (square_label, square_logits, move, board, fen_whole) make billed Claude API
     # calls (via the Message Batches API, 50% off) and need ANTHROPIC_API_KEY. Runs are resumable:
@@ -730,8 +776,18 @@ if __name__ == "__main__":
         help="Cap the number of not-yet-done setups generated this run (re-run to do more).",
     )
     parser.add_argument(
+        "--effort", choices=list(EFFORT_LEVELS), default="medium",
+        help="Thinking depth for --reasoning thinking (lower = shorter/cheaper thinking, fewer "
+        "max_tokens truncations). Ignored by other modes (recorded as the API default 'high').",
+    )
+    parser.add_argument(
         "--no-wait", action="store_true",
         help="VLM methods: submit the batches and exit without polling; re-run to collect.",
+    )
+    parser.add_argument(
+        "--collect-only", action="store_true",
+        help="Never submit -- only collect results already recorded in the sidecar (skips setups "
+        "with no recorded batch). Zero resubmission risk.",
     )
     parser.add_argument(
         "--poll-interval", type=int, default=30,
@@ -751,8 +807,10 @@ if __name__ == "__main__":
         splits=tuple(args.splits),
         resume=args.resume,
         max_setups=args.max_setups,
+        effort=args.effort,
         no_wait=args.no_wait,
         poll_interval=args.poll_interval,
+        collect_only=args.collect_only,
         data_path=args.data_path,
         output_path=args.output_path,
     )

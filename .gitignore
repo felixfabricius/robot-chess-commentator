@@ -35,6 +35,8 @@ trained_models
 # Evaluation
 *evaluation.ipynb
 *evaluation_results.csv
+evaluation/*.csv
+evaluation/*.json
 
 # demo outputs
 demo/out
