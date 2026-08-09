@@ -16,7 +16,7 @@ and roasting the bad ones.
 ### Pregenerate the move announcements
 
 ```bash
-uv run python -m chess_commentator.pregenerate_speech
+uv run python -m chess_commentator.voice.pregenerate
 ```
 
 Run this once before the first game. It synthesizes the ~150 fragments that every move

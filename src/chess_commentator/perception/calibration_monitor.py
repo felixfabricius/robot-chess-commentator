@@ -22,7 +22,7 @@ import time
 import cv2
 import numpy as np
 
-from chess_commentator.camera_utils import build_undistort_maps, undistort
+from chess_commentator.perception.undistort import build_undistort_maps, undistort
 
 WINDOW_NAME = "Reachy calibration monitor (press q to close)"
 LABEL_ORDER = ["a1", "a8", "h8", "h1"]
@@ -154,11 +154,11 @@ if __name__ == "__main__":
     # Standalone viewer, for checking a calibration with the game loop stopped (the same window
     # launch_calibration_monitor spawns, minus the second camera consumer):
     #
-    #   uv run python -m chess_commentator.calibration_monitor data/<setup>/calibration_metadata.json
+    #   uv run python -m chess_commentator.perception.calibration_monitor data/<setup>/calibration_metadata.json
     import sys
 
     if len(sys.argv) != 2:
         raise SystemExit(
-            "usage: python -m chess_commentator.calibration_monitor <calibration_metadata.json>"
+            "usage: python -m chess_commentator.perception.calibration_monitor <calibration_metadata.json>"
         )
     _monitor_worker(sys.argv[1], media_backend="default", fps=10)

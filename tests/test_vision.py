@@ -1,6 +1,6 @@
-from chess_commentator.vision import SquareEstimate, BoardEstimate, BoardEstimator
-from chess_commentator.model.model import SquareClassifierMultiHead
-from chess_commentator.model.config import TARGET_MAP
+from chess_commentator.perception.board_estimator import SquareEstimate, BoardEstimate, BoardEstimator
+from chess_commentator.cnn.model import SquareClassifierMultiHead
+from chess_commentator.labels import TARGET_MAP
 from omegaconf import OmegaConf
 from pathlib import Path
 

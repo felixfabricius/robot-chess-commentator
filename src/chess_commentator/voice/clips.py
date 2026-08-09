@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from chess_commentator.config import SQUARES
+from chess_commentator.board import SQUARES
 
 KOKORO_SAMPLE_RATE = 24000
 

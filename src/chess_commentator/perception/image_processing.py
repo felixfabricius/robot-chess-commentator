@@ -18,7 +18,7 @@ import numpy as np
 from omegaconf import OmegaConf
 import json
 
-from chess_commentator.camera_utils import build_undistort_maps, undistort
+from chess_commentator.perception.undistort import build_undistort_maps, undistort
 
 def letterbox(
     img: np.ndarray,
@@ -761,10 +761,10 @@ if __name__ == "__main__":
     # Warp one frame and write its 64 square crops next to it. Useful for eyeballing a
     # calibration (the annotated crops show the hull and the square's corners) without the robot.
     #
-    #   uv run python -m chess_commentator.image_processing \
+    #   uv run python -m chess_commentator.perception.image_processing \
     #       <calibration_metadata.json> <config.yaml> <image.png>
     #
-    # e.g. uv run python -m chess_commentator.image_processing \
+    # e.g. uv run python -m chess_commentator.perception.image_processing \
     #       data/raw_images/calibration_metadata.json config.yaml data/raw_images/raw.png
     import sys
     assert len(sys.argv) == 4

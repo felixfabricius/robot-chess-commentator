@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from chess_commentator import robot
-from chess_commentator.robot import (
+from chess_commentator.voice import speaker as speaker_module
+from chess_commentator.voice.speaker import (
     OUTRO_PROMPT_END,
     PROMPT_END,
     Speaker,
@@ -12,7 +12,7 @@ from chess_commentator.robot import (
     build_prompt,
     format_uci_for_speech,
 )
-from chess_commentator.speech_clips import KOKORO_SAMPLE_RATE, bake_clips, clip_texts
+from chess_commentator.voice.clips import KOKORO_SAMPLE_RATE, bake_clips, clip_texts
 
 
 def move_info(**overrides):
@@ -285,11 +285,11 @@ def candidate(uci, **overrides):
 
 
 def _fake_externals(monkeypatch, tmp_path, played):
-    monkeypatch.setattr(robot, "KPipeline", lambda **kwargs: None)
-    monkeypatch.setattr(robot.anthropic, "Anthropic", FakeClient)
+    monkeypatch.setattr(speaker_module, "KPipeline", lambda **kwargs: None)
+    monkeypatch.setattr(speaker_module.anthropic, "Anthropic", FakeClient)
     # comment_on_move plays through mini.media, which we don't have.
-    monkeypatch.setattr(robot, "play", lambda mini, audio, **kwargs: played.append(audio))
-    monkeypatch.setattr(robot, "CLIP_CACHE_DIR", tmp_path)  # never touch the real .cache
+    monkeypatch.setattr(speaker_module, "play", lambda mini, audio, **kwargs: played.append(audio))
+    monkeypatch.setattr(speaker_module, "CLIP_CACHE_DIR", tmp_path)  # never touch the real .cache
     monkeypatch.setattr(Speaker, "_synthesize", _fake_synthesize)
 
 
@@ -441,7 +441,7 @@ def test_speaker_never_bakes_on_a_cold_cache(monkeypatch, tmp_path, capsys):
 
         out = capsys.readouterr().out
         assert f"{len(clip_texts())}/{len(clip_texts())} clips missing" in out
-        assert "uv run python -m chess_commentator.pregenerate_speech --voice bm_george" in out
+        assert "uv run python -m chess_commentator.voice.pregenerate --voice bm_george" in out
     finally:
         spk.shutdown()
 
@@ -479,10 +479,10 @@ def test_speaker_derives_the_language_from_the_voice(monkeypatch, tmp_path):
     """Hardcoding lang_code="b" while leaving voice configurable gives an American voice read
     by a British G2P."""
     lang_codes = []
-    monkeypatch.setattr(robot, "KPipeline", lambda **kwargs: lang_codes.append(kwargs["lang_code"]))
-    monkeypatch.setattr(robot.anthropic, "Anthropic", FakeClient)
-    monkeypatch.setattr(robot, "play", lambda *args, **kwargs: None)
-    monkeypatch.setattr(robot, "CLIP_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(speaker_module, "KPipeline", lambda **kwargs: lang_codes.append(kwargs["lang_code"]))
+    monkeypatch.setattr(speaker_module.anthropic, "Anthropic", FakeClient)
+    monkeypatch.setattr(speaker_module, "play", lambda *args, **kwargs: None)
+    monkeypatch.setattr(speaker_module, "CLIP_CACHE_DIR", tmp_path)
     monkeypatch.setattr(Speaker, "_synthesize", _fake_synthesize)
 
     spk = Speaker(mini=None, config={"speaker": {"voice": "am_michael"}})
@@ -500,15 +500,15 @@ def test_outro_is_generated_with_its_own_token_cap(speaker):
 
     call = speaker.client.calls[-1]
     assert call["max_tokens"] == 200
-    assert call["system"] == robot.OUTRO_SYSTEM_PROMPT
+    assert call["system"] == speaker_module.OUTRO_SYSTEM_PROMPT
     assert "Result: 1-0 (CHECKMATE)" in call["prompt"]
 
 
 def test_outro_token_cap_is_configurable(monkeypatch, tmp_path):
-    monkeypatch.setattr(robot, "KPipeline", lambda **kwargs: None)
-    monkeypatch.setattr(robot.anthropic, "Anthropic", FakeClient)
-    monkeypatch.setattr(robot, "play", lambda *args, **kwargs: None)
-    monkeypatch.setattr(robot, "CLIP_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(speaker_module, "KPipeline", lambda **kwargs: None)
+    monkeypatch.setattr(speaker_module.anthropic, "Anthropic", FakeClient)
+    monkeypatch.setattr(speaker_module, "play", lambda *args, **kwargs: None)
+    monkeypatch.setattr(speaker_module, "CLIP_CACHE_DIR", tmp_path)
     monkeypatch.setattr(Speaker, "_synthesize", _fake_synthesize)
 
     spk = Speaker(mini=None, config={"speaker": {"outro": {"max_tokens": 500, "max_words": 30}}})

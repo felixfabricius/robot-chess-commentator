@@ -290,7 +290,7 @@ class SquareClassifierMultiHead(nn.Module):
 
 if __name__ == "__main__":
     # Parameter-count breakdown for each model, per block and per layer:
-    #     uv run python -m chess_commentator.model.model
+    #     uv run python -m chess_commentator.cnn.model
     # Worth keeping an eye on: there are only ~10k square crops of training data, so the
     # parameter budget is the constraint that decides how far these models can be pushed.
     for model_class in (SquareClassifier, SquareClassifier2, SquareClassifierMultiHead):

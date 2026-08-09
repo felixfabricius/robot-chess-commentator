@@ -13,16 +13,16 @@ needs (calibration, engine, voice, input method) is configured in config.yaml.
 from pathlib import Path
 from omegaconf import OmegaConf
 
-from chess_commentator.setup import setup
-from chess_commentator.camera import capture_image
-from chess_commentator.vision import BoardEstimator
+from chess_commentator.session import setup
+from chess_commentator.perception.camera import capture_image
+from chess_commentator.perception.board_estimator import BoardEstimator
 from chess_commentator.game import ChessGame
-from chess_commentator.image_processing import Processor
-from chess_commentator.input import InputDetector
-from chess_commentator.robot import Speaker
-from chess_commentator.outro import finale
-from chess_commentator.calibration import make_head_rigid, move_to_capture_pose
-from chess_commentator.calibration_monitor import launch_calibration_monitor
+from chess_commentator.perception.image_processing import Processor
+from chess_commentator.player_input import InputDetector
+from chess_commentator.voice.speaker import Speaker
+from chess_commentator.voice.outro import finale
+from chess_commentator.perception.calibration import make_head_rigid, move_to_capture_pose
+from chess_commentator.perception.calibration_monitor import launch_calibration_monitor
 
 from reachy_mini import ReachyMini
 

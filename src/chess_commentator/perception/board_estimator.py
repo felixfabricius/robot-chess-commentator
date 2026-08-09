@@ -47,10 +47,10 @@ import numpy as np
 
 from omegaconf import OmegaConf, DictConfig
 
-from chess_commentator.config import SQUARES, PIECES
-from chess_commentator.model.config import TARGET_MAP, reconstruct_13way_logprobs, TOP_LEFT_OHE_MAP
-from chess_commentator.model.data import EVAL_TRANSFORM
-from chess_commentator.model.model import SquareClassifierMultiHead
+from chess_commentator.board import SQUARES, PIECES
+from chess_commentator.labels import TARGET_MAP, reconstruct_13way_logprobs, TOP_LEFT_OHE_MAP
+from chess_commentator.cnn.data import EVAL_TRANSFORM
+from chess_commentator.cnn.model import SquareClassifierMultiHead
 
 load_dotenv()
 
@@ -584,7 +584,7 @@ def estimate_fen_whole_llm(client, image_path, corner_map, model="claude-sonnet-
 
 
 # --- Batch-API building blocks: build a request / turn a parsed answer into an estimate ----------
-# The batch harness (model/evaluation.py) builds every request up front and scores the responses
+# The batch harness (benchmark/harness.py) builds every request up front and scores the responses
 # minutes-to-hours later, so request construction and answer interpretation are factored out here
 # to be shared with the synchronous path -- both send identical requests and interpret answers the
 # same way; only the transport (live call vs Message Batches) differs.
@@ -742,12 +742,12 @@ class BoardEstimator:
 
         else:
             # TODO: the square name is recovered from the filename, so this breaks if the
-            # cutout naming convention in image_processing.py ever changes.
+            # cutout naming convention in perception/image_processing.py ever changes.
             square = image_path.stem
             square_dir = image_path.parent
 
             # Metadata: one-hot of which board corner is top-left in the image. Must match
-            # training (model/data.py) - both use TOP_LEFT_OHE_MAP.
+            # training (cnn/data.py) - both use TOP_LEFT_OHE_MAP.
             metadata = torch.zeros(1, 4, dtype=torch.float32)
             metadata[0, TOP_LEFT_OHE_MAP[self.top_left_corner]] = 1
             metadata = metadata.to(self.device)
@@ -822,7 +822,7 @@ if __name__ == "__main__":
     # is standing on each square. Useful when the board estimate disagrees with reality and you
     # want to see whether the model is confidently wrong or merely unsure.
     #
-    #   uv run python -m chess_commentator.vision \
+    #   uv run python -m chess_commentator.perception.board_estimator \
     #       data/generated/2026-07-01_175334/board_2026-07-01_175602/squares --squares a1 e4
     import argparse
     import math

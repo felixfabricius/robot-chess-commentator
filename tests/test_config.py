@@ -5,7 +5,7 @@ head targets, and reconstruct_13way_logprobs putting the heads back together aga
 import torch
 from torch import nn
 
-from chess_commentator.model.config import (
+from chess_commentator.labels import (
     TARGET_MAP,
     IGNORE_INDEX,
     decompose_label,
@@ -119,7 +119,7 @@ def test_log_prior_all_classes_absent_is_uniform():
 
 ### reconstruct_13way_logprobs -- Bayesian prior correction
 def test_reconstruct_log_prior_is_optional():
-    """Guards the signature: evaluate.py and vision.py both call this with three positional args."""
+    """Guards the signature: evaluate.py and perception/board_estimator.py both call this with three positional args."""
     torch.manual_seed(0)
     heads = (torch.randn(4), torch.randn(4, 2), torch.randn(4, 6))
     assert torch.allclose(

@@ -1,10 +1,10 @@
 """Training entry point: Hydra for the config, Weights & Biases for the logging.
 
-    uv run python -m chess_commentator.model.main
-    uv run python -m chess_commentator.model.main model=2 training.epochs=10
-    uv run python -m chess_commentator.model.main +debug=true
+    uv run python -m chess_commentator.cnn.run
+    uv run python -m chess_commentator.cnn.run model=2 training.epochs=10
+    uv run python -m chess_commentator.cnn.run +debug=true
 
-Defaults live in model/config.yaml and any of them can be overridden on the command line.
+Defaults live in cnn/config.yaml and any of them can be overridden on the command line.
 `debug` and `prefix` are the exception: they are not in config.yaml, and Hydra's struct mode
 rejects unknown keys, so they need the `+` prefix to be appended (`+debug=true` cuts each epoch
 to a few batches, for a quick smoke run).
@@ -24,16 +24,16 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 from dotenv import load_dotenv
 
-from chess_commentator.model.model import SquareClassifier, SquareClassifier2, SquareClassifierMultiHead
-from chess_commentator.model.data import create_dataloader
-from chess_commentator.model.train import train
-from chess_commentator.model.evaluate import evaluate
-from chess_commentator.model.config import (
+from chess_commentator.cnn.model import SquareClassifier, SquareClassifier2, SquareClassifierMultiHead
+from chess_commentator.cnn.data import create_dataloader
+from chess_commentator.cnn.train import train
+from chess_commentator.cnn.evaluate import evaluate
+from chess_commentator.labels import (
     decompose_label,
     IGNORE_INDEX,
     log_prior_from_label_counts,
 )
-from chess_commentator.image_processing import MASK_VARIANTS
+from chess_commentator.perception.image_processing import MASK_VARIANTS
 
 load_dotenv() # for api keys
 

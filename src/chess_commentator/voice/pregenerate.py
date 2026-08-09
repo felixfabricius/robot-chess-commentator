@@ -1,8 +1,8 @@
 """
 Generate the clips the robot speaks when it suggests a move, and cache them under .cache/speech.
 
-    uv run python -m chess_commentator.pregenerate_speech
-    uv run python -m chess_commentator.pregenerate_speech --voice am_michael
+    uv run python -m chess_commentator.voice.pregenerate
+    uv run python -m chess_commentator.voice.pregenerate --voice am_michael
 
 Run this once, before the first game. It synthesizes the ~150 fragments every move suggestion
 is spliced from ("E2 to,", "E4?", "Castle kingside?", ...) so the game loop never has to run
@@ -17,8 +17,8 @@ import argparse
 
 from omegaconf import OmegaConf
 
-from chess_commentator.robot import DEFAULT_VOICE, synthesize
-from chess_commentator.speech_clips import (
+from chess_commentator.voice.speaker import DEFAULT_VOICE, synthesize
+from chess_commentator.voice.clips import (
     CLIP_CACHE_DIR,
     KOKORO_SAMPLE_RATE,
     bake_clips,

@@ -25,8 +25,8 @@ data:
   # until the row count lands closest to target_rows; val/test are never touched. null -> use all
   # of the train split. Because the kept setups are a prefix of one seeded permutation, a smaller
   # target is always a SUBSET of a larger one, so the points of the ablation are nested:
-  #   uv run python -m chess_commentator.model.main data.subsample.target_rows=5000
-  #   uv run python -m chess_commentator.model.main data.subsample.target_rows=10000
+  #   uv run python -m chess_commentator.cnn.run data.subsample.target_rows=5000
+  #   uv run python -m chess_commentator.cnn.run data.subsample.target_rows=10000
   subsample:
     target_rows: null
     seed: 0

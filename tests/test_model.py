@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import torch
 import time
-from chess_commentator.model.data import create_dataloader
-from chess_commentator.model.model import SquareClassifier, SquareClassifierMultiHead
+from chess_commentator.cnn.data import create_dataloader
+from chess_commentator.cnn.model import SquareClassifier, SquareClassifierMultiHead
 
 # The generated dataset is gitignored, so skip rather than fail wherever it is absent (CI, a
 # fresh clone).
@@ -87,7 +87,7 @@ def test_log_prior_survives_state_dict_roundtrip():
     assert torch.allclose(restored.log_prior, log_prior, atol=1e-6)
 
 def test_legacy_state_dict_without_log_prior_loads_non_strictly():
-    """Mirrors vision.py: weights saved before the buffer existed must still load, leaving the
+    """Mirrors perception/board_estimator.py: weights saved before the buffer existed must still load, leaving the
     prior at all-zeros (no correction), and `log_prior` must be the ONLY tolerated missing key.
     """
     legacy = SquareClassifierMultiHead(log_prior=torch.full((13,), -2.0)).state_dict()
@@ -100,7 +100,7 @@ def test_legacy_state_dict_without_log_prior_loads_non_strictly():
     assert torch.allclose(model.log_prior, torch.zeros(13))
 
 def test_legacy_state_dict_loads_strictly_only_when_buffer_absent():
-    """A strict load of a legacy checkpoint fails loudly -- the reason vision.py uses strict=False
+    """A strict load of a legacy checkpoint fails loudly -- the reason perception/board_estimator.py uses strict=False
     with an explicit allow-list rather than silently ignoring mismatches.
     """
     legacy = SquareClassifierMultiHead().state_dict()

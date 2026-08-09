@@ -6,15 +6,15 @@ invisible via the normal path. This script STREAMS the call and prints the raw t
 arrive -- so you see the runaway/looping content even when the final message has no complete object.
 
     # what the model emits under the real (structured) move schema:
-    uv run python evaluation/inspect_llm.py move
+    uv run python -m chess_commentator.benchmark.inspect_llm move
 
     # the same board with structured output OFF -- reveals the raw free-form behaviour (is it
     # repeating a move? writing endless prose?):
-    uv run python evaluation/inspect_llm.py move --free
+    uv run python -m chess_commentator.benchmark.inspect_llm move --free
 
     # try the board/fen_whole methods, a different board, more room, or reasoning:
-    uv run python evaluation/inspect_llm.py board --index 3
-    uv run python evaluation/inspect_llm.py move --reasoning text --max-tokens 4096
+    uv run python -m chess_commentator.benchmark.inspect_llm board --index 3
+    uv run python -m chess_commentator.benchmark.inspect_llm move --reasoning text --max-tokens 4096
 
 Needs ANTHROPIC_API_KEY. One call per run -- cheap.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 import anthropic
 import polars as pl
 
-from chess_commentator.vision import (
+from chess_commentator.perception.board_estimator import (
     _MOVE_SCHEMA,
     _BOARD_SCHEMA,
     _FEN_WHOLE_SCHEMA,

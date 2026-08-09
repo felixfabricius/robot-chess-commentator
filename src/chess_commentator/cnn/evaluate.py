@@ -6,9 +6,9 @@ import wandb
 
 from pathlib import Path
 
-from chess_commentator.vision import BoardEstimator
+from chess_commentator.perception.board_estimator import BoardEstimator
 from chess_commentator.game import ChessGame
-from chess_commentator.model.config import (
+from chess_commentator.labels import (
     INVERSE_TARGET_MAP,
     INVERSE_COLOR_MAP,
     INVERSE_TYPE_MAP,

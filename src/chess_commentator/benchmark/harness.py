@@ -61,9 +61,9 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from chess_commentator.config import SQUARES, PIECES
+from chess_commentator.board import SQUARES, PIECES
 from chess_commentator.game import ChessGame
-from chess_commentator.vision import (
+from chess_commentator.perception.board_estimator import (
     BoardEstimate,
     BoardEstimator,
     EFFORT_LEVELS,
@@ -717,23 +717,23 @@ if __name__ == "__main__":
     # rows to the output CSV. One run = one method + config.
     #
     #   # the trained CNN (model_version defaults to the weights path); runs locally:
-    #   uv run python -m chess_commentator.model.evaluation cnn \
+    #   uv run python -m chess_commentator.benchmark.harness cnn \
     #       --model-weights-path weights/model_state_dict.safetensors
     #
     #   # the strongest VLM, predicting the move from the after-image, reasoning out loud first.
     #   # This submits a Message Batch and polls until it finishes, then scores:
-    #   uv run python -m chess_commentator.model.evaluation move --reasoning text
+    #   uv run python -m chess_commentator.benchmark.harness move --reasoning text
     #
     #   # generate the next 3 val setups only; safe to re-run (skips done setups) after a crash:
-    #   uv run python -m chess_commentator.model.evaluation move --splits val --max-setups 3
+    #   uv run python -m chess_commentator.benchmark.harness move --splits val --max-setups 3
     #
     #   # big run: submit now and come back later -- the first call returns after submitting,
     #   # the second collects whatever has finished:
-    #   uv run python -m chess_commentator.model.evaluation square_logits --no-wait
-    #   uv run python -m chess_commentator.model.evaluation square_logits          # collect
+    #   uv run python -m chess_commentator.benchmark.harness square_logits --no-wait
+    #   uv run python -m chess_commentator.benchmark.harness square_logits          # collect
     #
     #   # collect outstanding results only, never submitting (zero resubmission risk):
-    #   uv run python -m chess_commentator.model.evaluation square_logits --splits val --collect-only
+    #   uv run python -m chess_commentator.benchmark.harness square_logits --splits val --collect-only
     #
     # The VLM methods (square_label, square_logits, move, board, fen_whole) make billed Claude API
     # calls (via the Message Batches API, 50% off) and need ANTHROPIC_API_KEY. Runs are resumable:

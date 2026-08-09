@@ -1,5 +1,5 @@
-"""Label and metadata encodings shared by training (model/data.py, model/train.py,
-model/evaluate.py) and inference (vision.py), plus the two functions that convert between the
+"""Label and metadata encodings shared by training (cnn/data.py, cnn/train.py,
+cnn/evaluate.py) and inference (perception/board_estimator.py), plus the two functions that convert between the
 13-way label space and the multi-head model's factored one. Anything both sides need to agree on
 lives here, so the two encodings cannot drift apart.
 """
@@ -26,7 +26,7 @@ INVERSE_TYPE_MAP = {v: k for k, v in TYPE_MAP.items()}
 
 # One-hot index for which board corner is top-left in the camera image
 # (calibration_metadata["camera_natural_orientation"]["order"]["tl"]). This is the model's
-# only metadata now. Shared between training (model/data.py) and inference (vision.py) so the
+# only metadata now. Shared between training (cnn/data.py) and inference (perception/board_estimator.py) so the
 # two encodings can never drift apart.
 TOP_LEFT_OHE_MAP = {"a8": 0, "a1": 1, "h1": 2, "h8": 3}
 

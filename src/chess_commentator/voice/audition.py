@@ -2,9 +2,9 @@
 Bake the move-suggestion clip library and write spliced samples to WAV, so the splice gap can
 be tuned by ear without the robot.
 
-    uv run python -m chess_commentator.audition_speech --sweep
-    uv run python -m chess_commentator.audition_speech --gaps 0,40,60,80,120 --moves e2e4,e1g1
-    uv run python -m chess_commentator.audition_speech --raw --moves e2e4
+    uv run python -m chess_commentator.voice.audition --sweep
+    uv run python -m chess_commentator.voice.audition --gaps 0,40,60,80,120 --moves e2e4,e1g1
+    uv run python -m chess_commentator.voice.audition --raw --moves e2e4
 
 Needs Kokoro, but no robot and no Anthropic key. On a cold cache the first run bakes all 150
 clips (~5-8 minutes); after that it starts instantly and writes WAVs into .cache/speech/audition.
@@ -18,8 +18,8 @@ import argparse
 import numpy as np
 from scipy.io import wavfile
 
-from chess_commentator.robot import DEFAULT_VOICE, synthesize
-from chess_commentator.speech_clips import (
+from chess_commentator.voice.speaker import DEFAULT_VOICE, synthesize
+from chess_commentator.voice.clips import (
     CLIP_CACHE_DIR,
     DEFAULT_SPLICE_GAP_MS,
     KOKORO_SAMPLE_RATE,

@@ -15,7 +15,7 @@ from torchvision.transforms import v2
 
 from pathlib import Path, PureWindowsPath
 
-from chess_commentator.model.config import decompose_label, TOP_LEFT_OHE_MAP
+from chess_commentator.labels import decompose_label, TOP_LEFT_OHE_MAP
 
 TRAIN_TRANSFORM = v2.Compose([
     v2.ToImage(), 
@@ -172,7 +172,7 @@ class squareDataset(Dataset):
 
     # Note on board-level evaluation: batching the 64 squares of one position together through
     # this Dataset was considered and abandoned - it silently breaks as soon as a single row is dropped
-    # from the CSV. model/evaluate.py instead re-reads data.csv, walks the valid game positions of
+    # from the CSV. cnn/evaluate.py instead re-reads data.csv, walks the valid game positions of
     # the split, and runs the real BoardEstimator over each position's squares directory.
 
 
@@ -191,7 +191,7 @@ def create_dataloader(
     subsample_seed: int = 0,
 ):
     """A DataLoader over the given split of data.csv. num_workers / persistent_workers /
-    pin_memory come straight from the Hydra config (see model/config.yaml).
+    pin_memory come straight from the Hydra config (see cnn/config.yaml).
 
     subsample_target_rows drives the data-efficiency ablation; it is ignored on val/test (see
     squareDataset). What was actually kept is on `dataloader.dataset.subsample_info`.

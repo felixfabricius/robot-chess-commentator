@@ -2,7 +2,7 @@
 
 Two-phase workflow:
 
-* **Phase 1 — relabelling** (``chess_commentator.calibration.relabel_existing_setups``): the
+* **Phase 1 — relabelling** (``chess_commentator.perception.calibration.relabel_existing_setups``): the
   interactive session that opens each existing setup's ``raw.png`` undistorted and writes an
   updated, versioned ``calibration_metadata.json`` (adds the centre point + camera intrinsics).
 * **Phase 2 — regeneration** (this module): for each setup, build its :class:`Processor` once
@@ -17,7 +17,7 @@ live only in each square's ``_metadata.json`` (and the CSV). So each square's ex
 Reads camera intrinsics from each setup's metadata, so the batch never imports ``reachy_mini``
 and the worker is a plain top-level function (importable by name under Windows "spawn").
 
-Run with ``uv run python -m chess_commentator.regenerate [--data-root DIR] [--config FILE]
+Run with ``uv run python -m chess_commentator.dataset.regenerate [--data-root DIR] [--config FILE]
 [--workers N]``; the defaults regenerate everything under ``data/generated`` using ``config.yaml``
 and one worker process per CPU.
 
@@ -28,7 +28,7 @@ untouched. Each variant tree gets the per-setup calibration metadata and its own
 with the path columns repointed, so a training run only needs
 ``data.csv_path=data/generated_<variant>/data.csv``::
 
-    uv run python -m chess_commentator.regenerate --variant square_global
+    uv run python -m chess_commentator.dataset.regenerate --variant square_global
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from pathlib import Path
 
 import polars as pl
 
-from chess_commentator.image_processing import MASK_VARIANTS, Processor
+from chess_commentator.perception.image_processing import MASK_VARIANTS, Processor
 
 DATA_ROOT = Path("data") / "generated"
 
@@ -79,7 +79,7 @@ def write_variant_csv(src_csv: Path, src_root: Path, dst_root: Path, dst_csv: Pa
 
     Labels, splits and FENs are copied untouched: a variant tree holds exactly the same boards
     cut a different way, so only the file locations change. Legacy rows written on Windows with
-    backslash separators are normalised to posix on the way through (matching model/data.py).
+    backslash separators are normalised to posix on the way through (matching cnn/data.py).
     """
     dst_csv = Path(dst_csv) if dst_csv else Path(dst_root) / "data.csv"
     src_prefix = Path(src_root).as_posix().rstrip("/") + "/"
