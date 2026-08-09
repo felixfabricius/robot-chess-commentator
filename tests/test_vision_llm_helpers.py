@@ -1,4 +1,4 @@
-"""Pure-helper tests for the VLM strategies in perception/board_estimator.py -- no API calls, no data files.
+"""Pure-helper tests for vlm/strategies.py -- no API calls, no data files.
 
 These cover the parsing + legality logic that turns a VLM's raw output (method i's UCI list,
 method ii's FEN list) into a prediction and the illegality statistics, plus the FEN/label
@@ -7,7 +7,7 @@ plumbing they rely on.
 import chess
 import pytest
 
-from chess_commentator.perception.board_estimator import (
+from chess_commentator.vlm.strategies import (
     board_to_labels,
     fen_board_to_labels,
     first_legal_and_stats,

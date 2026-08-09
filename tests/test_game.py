@@ -1,7 +1,7 @@
 import pytest
 
 from chess_commentator.game import ChessGame
-from chess_commentator.perception.board_estimator import SquareEstimate, BoardEstimate
+from chess_commentator.board import SquareEstimate, BoardEstimate
 from chess_commentator.board import SQUARES
 from chess_commentator.labels import TARGET_MAP
 

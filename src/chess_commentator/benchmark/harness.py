@@ -16,7 +16,7 @@ Every method is reduced to the same handful of per-board metrics so results are 
                           it off its first returned FEN; None for move/fen_whole).
   - correct_board       : the predicted move equals the move actually played. For the square methods
                           this is game.estimate_move's top-ranked legal move; for move/board it is
-                          the first *legal* candidate the model returned (see vision.first_legal_and_stats).
+                          the first *legal* candidate the model returned (see vlm.strategies.first_legal_and_stats).
   - board_rank          : normalised rank of the true move, 1.0 when ranked first, None when
                           undefined (fewer than 2 candidates, or the true move is absent). NOTE the
                           basis differs across method families: square methods rank over ALL legal
@@ -61,23 +61,19 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from chess_commentator.board import SQUARES, PIECES
+from chess_commentator.board import SQUARES, PIECES, BoardEstimate, SquareEstimate
 from chess_commentator.game import ChessGame
-from chess_commentator.perception.board_estimator import (
-    BoardEstimate,
-    BoardEstimator,
-    EFFORT_LEVELS,
-    LLMResponseError,
-    SquareEstimate,
+from chess_commentator.perception.board_estimator import BoardEstimator
+from chess_commentator.vlm.client import EFFORT_LEVELS, LLMResponseError, parse_message
+from chess_commentator.vlm.prompts import collect_slots
+from chess_commentator.vlm.strategies import (
     build_board_params,
     build_fen_whole_params,
     build_move_params,
     build_square_params,
     fen_board_to_labels,
     first_legal_and_stats,
-    parse_message,
     parsed_to_square_estimate,
-    _collect_slots,
 )
 
 METHODS = ("cnn", "square_label", "square_logits", "move", "board", "fen_whole")
@@ -182,10 +178,10 @@ def _score_whole_image(method, parsed, previous_fen, actual_move, true_labels) -
         return record
 
     if method == "move":
-        candidates, kind = _collect_slots(parsed, "move"), "move"
+        candidates, kind = collect_slots(parsed, "move"), "move"
         record["n_suggested"] = len(candidates)  # candidates the model returned (raw)
     elif method == "board":
-        candidates, kind = _collect_slots(parsed, "board"), "board"
+        candidates, kind = collect_slots(parsed, "board"), "board"
         record["n_suggested"] = len(candidates)
         # Bonus square metric: read it off the model's first returned board, if parseable.
         if candidates:
@@ -615,7 +611,7 @@ def main(
     assert method in METHODS, f"method must be one of {METHODS}"
     assert set(splits) <= {"val", "test"}, f"splits must be a subset of val/test; got {splits}"
     assert effort in EFFORT_LEVELS, f"effort must be one of {EFFORT_LEVELS}; got {effort}"
-    # `effort` is only sent in thinking mode (see vision._build_message_params), so a non-thinking
+    # `effort` is only sent in thinking mode (see vlm.client.build_message_params), so a non-thinking
     # run genuinely executes at the API default "high" -- record it as such so the requested flag
     # never fragments the config identity of runs whose requests it didn't change.
     effort = effort if reasoning == "thinking" else "high"
@@ -761,7 +757,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--reasoning", choices=["none", "text", "thinking"], default="none",
-        help="LLM reasoning mode before the answer (see vision._build_message_params).",
+        help="LLM reasoning mode before the answer (see vlm.client.build_message_params).",
     )
     parser.add_argument(
         "--splits", nargs="+", choices=["val", "test"], default=["val", "test"],

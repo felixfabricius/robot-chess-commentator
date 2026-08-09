@@ -1,4 +1,5 @@
-from chess_commentator.perception.board_estimator import SquareEstimate, BoardEstimate, BoardEstimator
+from chess_commentator.board import SquareEstimate, BoardEstimate
+from chess_commentator.perception.board_estimator import BoardEstimator
 from chess_commentator.cnn.model import SquareClassifierMultiHead
 from chess_commentator.labels import TARGET_MAP
 from omegaconf import OmegaConf

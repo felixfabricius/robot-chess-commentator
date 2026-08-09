@@ -25,18 +25,17 @@ from pathlib import Path
 import anthropic
 import polars as pl
 
-from chess_commentator.perception.board_estimator import (
-    _MOVE_SCHEMA,
-    _BOARD_SCHEMA,
-    _FEN_WHOLE_SCHEMA,
+from chess_commentator.vlm.client import image_block, with_reasoning_field
+from chess_commentator.vlm.prompts import (
+    BOARD_SCHEMA,
+    FEN_WHOLE_SCHEMA,
+    MOVE_SCHEMA,
     PROMPTS,
-    _image_block,
-    _orientation_sentence,
-    _previous_position_prompt,
-    _with_reasoning_field,
+    orientation_sentence,
+    previous_position_prompt,
 )
 
-_SCHEMA = {"move": _MOVE_SCHEMA, "board": _BOARD_SCHEMA, "fen_whole": _FEN_WHOLE_SCHEMA}
+_SCHEMA = {"move": MOVE_SCHEMA, "board": BOARD_SCHEMA, "fen_whole": FEN_WHOLE_SCHEMA}
 
 
 def inspect(method, index, split, model, max_tokens, structured, reasoning,
@@ -53,21 +52,21 @@ def inspect(method, index, split, model, max_tokens, structured, reasoning,
     with open(data_root / setup_id / "calibration_metadata.json", encoding="utf-8") as f:
         corner_map = json.load(f)["camera_natural_orientation"]["order"]
     if method == "fen_whole":
-        prompt = PROMPTS["fen_whole"][1].format(orientation=_orientation_sentence(corner_map))
+        prompt = PROMPTS["fen_whole"][1].format(orientation=orientation_sentence(corner_map))
     else:
-        prompt = _previous_position_prompt(PROMPTS[method][1], row["previous_board_fen"], corner_map)
+        prompt = previous_position_prompt(PROMPTS[method][1], row["previous_board_fen"], corner_map)
 
     schema = _SCHEMA[method]
     if reasoning == "text":
-        schema = _with_reasoning_field(schema)
+        schema = with_reasoning_field(schema)
         prompt += "\nFirst reason step by step in the `reasoning` field, then fill in the answer."
 
     kwargs = dict(
         model=model,
         max_tokens=max_tokens,
-        messages=[{"role": "user", "content": [_image_block(warped), {"type": "text", "text": prompt}]}],
+        messages=[{"role": "user", "content": [image_block(warped), {"type": "text", "text": prompt}]}],
     )
-    # Mirror _call_claude: thinking is set EXPLICITLY (some models think by default when omitted).
+    # Mirror vlm.client.call_claude: thinking is set EXPLICITLY (some models think by default when omitted).
     # Use summarized display for "thinking" so the streamed thinking is actually visible here.
     if reasoning == "thinking":
         kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}

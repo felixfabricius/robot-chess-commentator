@@ -10,9 +10,9 @@ from pathlib import Path
 
 import chess_commentator
 from chess_commentator.perception.image_processing import Processor
-from chess_commentator.perception.board_estimator import BoardEstimate, BoardEstimator
+from chess_commentator.perception.board_estimator import BoardEstimator
 from chess_commentator.game import ChessGame
-from chess_commentator.board import PIECES, SQUARES, PIECE_DISPLAY
+from chess_commentator.board import PIECES, SQUARES, PIECE_DISPLAY, BoardEstimate
 
 # Anchor every path to the repo root rather than the working directory, so the demo behaves
 # identically wherever it is launched from. chess_commentator is installed from
