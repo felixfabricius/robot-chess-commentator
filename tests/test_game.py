@@ -1,9 +1,9 @@
 import pytest
 
-from chess_assistant.game import ChessGame
-from chess_assistant.vision import SquareEstimate, BoardEstimate
-from chess_assistant.config import SQUARES
-from chess_assistant.model.config import TARGET_MAP
+from chess_commentator.game import ChessGame
+from chess_commentator.board import SquareEstimate, BoardEstimate
+from chess_commentator.board import SQUARES
+from chess_commentator.labels import TARGET_MAP
 
 
 @pytest.fixture

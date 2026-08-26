@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # torch resolves to the CUDA build by default, which is ~2.5 GB of wheels for a job that
+      # only ever runs forward passes on tiny tensors.
+      UV_TORCH_BACKEND: cpu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --all-groups, not the default: test_speaker.py and test_outro.py import kokoro and the
+      # reachy SDK as ordinary libraries. Nothing in the suite touches hardware or the network.
+      - name: Install
+        run: uv sync --all-groups --frozen
+
+      - name: Lint
+        run: uv run ruff check src tests demo
+
+      # The single highest-value check for a repo that has just been renamed and re-laid-out: a
+      # broken import path is invisible to the tests that do not happen to import that module.
+      # No __main__ guard fires under import and @hydra.main only decorates, so this is safe.
+      - name: Every module imports
+        run: |
+          uv run python - <<'PY'
+          import importlib, pkgutil, chess_commentator as p
+          bad = []
+          for m in pkgutil.walk_packages(p.__path__, p.__name__ + "."):
+              try:
+                  importlib.import_module(m.name)
+              except Exception as e:
+                  bad.append(f"{m.name}: {e!r}")
+          print("\n".join(bad) or "all modules import OK")
+          raise SystemExit(1 if bad else 0)
+          PY
+
+      # Docs and error strings advertise ~12 `python -m` entry points. A restructure silently
+      # invalidates them: nothing imports a docstring, so nothing else would ever notice.
+      - name: Documented `python -m` targets resolve
+        run: |
+          uv run python - <<'PY'
+          import importlib.util, re, subprocess
+          mods = set()
+          for f in subprocess.check_output(["git", "ls-files"], text=True).split():
+              if f.endswith((".png", ".safetensors", ".csv")):
+                  continue
+              try:
+                  text = open(f, encoding="utf-8", errors="ignore").read()
+              except OSError:
+                  continue
+              mods |= set(re.findall(r"python -m ([A-Za-z_][\w.]*)", text))
+          missing = [m for m in sorted(mods) if importlib.util.find_spec(m) is None]
+          print(f"checked {len(mods)} targets -> missing: {missing or 'none'}")
+          raise SystemExit(1 if missing else 0)
+          PY
+
+      # The data-dependent modules skip themselves here: data/ is gitignored and ~19 GB.
+      - name: Tests
+        run: uv run pytest -q
+
+      # hatchling cannot infer the package dir (import name != distribution name), so the wheel
+      # contents are a real failure mode rather than a formality. cnn/config.yaml must ship too
+      # or Hydra has nothing to load.
+      - name: Build
+        run: |
+          uv build
+          uv run python - <<'PY'
+          import glob, zipfile
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          tops = sorted({n.split("/")[0] for n in names})
+          assert tops == ["chess_commentator", "robot_chess_commentator-0.1.0.dist-info"], tops
+          assert any(n.endswith("cnn/config.yaml") for n in names), "Hydra config missing from wheel"
+          print(f"{wheel}: {tops}, hydra config present")
+          PY

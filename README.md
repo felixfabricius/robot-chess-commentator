@@ -1,4 +1,4 @@
-# chess-assistant
+# robot-chess-commentator
 
 A [Reachy Mini](https://huggingface.co/blog/reachy-mini) desktop robot that watches two humans play
 physical chess, reads the board from a single camera photo with a custom 1.3 MB CNN, ranks the legal
@@ -8,6 +8,31 @@ and roasting the bad ones.
 > **Note:** this README is a work in progress. Setup instructions, architecture, and results are
 > still to come — the Setup section below is a stub covering one step of many.
 
+## Layout
+
+The package is `chess_commentator`, under `src/`. Reading down the stack:
+
+| | |
+| --- | --- |
+| `main.py` | the game loop — one iteration is one move |
+| `session.py` | setup directory + putting the robot in its capture pose |
+| `game.py` | board state; ranks every *legal* move against a noisy reading |
+| `player_input.py` | "was there an input?", via the antennas or the keyboard |
+| `board.py`, `labels.py` | the shared vocabularies: square/piece names, and the 13-way label encoding |
+| `perception/` | camera frame → rectified board → 64 square crops → a board reading |
+| `vlm/` | Claude-on-**images**: prompts, schemas, and the whole-image reading strategies |
+| `voice/` | Claude-on-**text** + Kokoro TTS + playback |
+| `cnn/` | the 1.3 MB square classifier and its training loop |
+| `dataset/` | offline tools that produce the labelled training data |
+| `benchmark/` | scoring the six board-reading methods against each other |
+
+Every `__init__.py` is import-free, so the heavy and hardware-bound dependencies (torch,
+anthropic, kokoro, reachy_mini) stay confined to the modules that actually need them — importing
+`board` pulls in nothing, and importing `vlm` pulls in no torch.
+
+`tests/` mirrors this tree. `demo/` sits outside the package and consumes it as an installed
+dependency; it is the only end-to-end run that needs neither the robot nor an API key.
+
 ## Setup
 
 > **TODO:** this section only documents the speech cache. Still to write: `uv sync`, installing
@@ -16,7 +41,7 @@ and roasting the bad ones.
 ### Pregenerate the move announcements
 
 ```bash
-uv run python -m chess_assistant.pregenerate_speech
+uv run python -m chess_commentator.voice.pregenerate
 ```
 
 Run this once before the first game. It synthesizes the ~150 fragments that every move

@@ -1,7 +1,7 @@
 [project]
-name = "chess-assistant"
+name = "robot-chess-commentator"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Reachy Mini robot that watches a physical chess game, reads the board from one photo, and commentates out loud."
 readme = "README.md"
 authors = [{ name = "Felix Fabricius" }]
 requires-python = ">=3.12"
@@ -29,16 +29,51 @@ dependencies = [
     "wandb>=0.28.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/felixfabricius/robot-chess-commentator"
+Repository = "https://github.com/felixfabricius/robot-chess-commentator"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.14",
 ]
 robot = [
     "kokoro>=0.9.4",
     "reachy-mini[mujoco]>=1.8.4",
     "scipy>=1.18.0",
 ]
+# Only needed to build and push the Hugging Face dataset/model repos
+# (chess_commentator.dataset.publish / publish_model). huggingface-hub is otherwise
+# present only transitively, via the robot extras.
+publish = [
+    "datasets>=3.0",
+    "huggingface-hub>=0.28",
+    "pyarrow>=18.0",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The import name is deliberately shorter than the distribution name, so hatchling cannot infer
+# the package directory from `project.name`. Keeping this explicit is what lets the directory and
+# the distribution be renamed independently instead of having to move in lockstep.
+[tool.hatch.build.targets.wheel]
+packages = ["src/chess_commentator"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+# Ruff's default rule set. F (pyflakes) is the one that earns its keep here: F401/F811/F821 are
+# exactly the residue that a package rename and a module split leave behind.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# demo.py is a `#%%` cell script, so its first cell is a toggle and the imports land in the
+# second one. E402 (import not at top of file) is wrong about that by construction.
+"demo/demo.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,56 @@
+defaults:
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+model: 3
+note: ""
+
+# Combination weights for the three heads of the multi-head model (model 3): the
+# back-propagated train loss and the eval/total diagnostic are
+#   loss_weights.empty * empty_loss + loss_weights.color * color_loss + loss_weights.type * type_loss
+loss_weights:
+  empty: 1.0
+  color: 1.0
+  type: 1.0
+
+data:
+  weighting: inverse_root # options: inverse_root; or anything else -> no inverse_root weighting
+  csv_path: data/generated/data.csv
+  # Data-efficiency ablation. Keeps whole setups from the TRAIN split (in a seed-shuffled order)
+  # until the row count lands closest to target_rows; val/test are never touched. null -> use all
+  # of the train split. Because the kept setups are a prefix of one seeded permutation, a smaller
+  # target is always a SUBSET of a larger one, so the points of the ablation are nested:
+  #   uv run python -m chess_commentator.cnn.run data.subsample.target_rows=5000
+  #   uv run python -m chess_commentator.cnn.run data.subsample.target_rows=10000
+  subsample:
+    target_rows: null
+    seed: 0
+  dataloader:
+    num_workers: 3
+    # Without this, workers are shut down and restarted after each Epoch.
+    # That's costly on Windows, where workers can be created only via the 'spawn', 
+    # rather than Linux's 'fork', which copies current memory state.
+    # 'spawn' means that e.g. all the import need to happen again. 
+    persistent_workers: True
+    pin_memory: True
+    
+
+training:
+  batch_size: 64
+  epochs: 50
+
+optimizer:
+  lr: 1e-3
+  weight_decay: 1e-4
+
+scheduler:
+  # Cosine-anneals lr from optimizer.lr down to eta_min over training.epochs epochs.
+  eta_min: 1e-6
+
+inference:
+  prior_correction: False
