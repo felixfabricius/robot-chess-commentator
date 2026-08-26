@@ -43,6 +43,14 @@ robot = [
     "reachy-mini[mujoco]>=1.8.4",
     "scipy>=1.18.0",
 ]
+# Only needed to build and push the Hugging Face dataset/model repos
+# (chess_commentator.dataset.publish / publish_model). huggingface-hub is otherwise
+# present only transitively, via the robot extras.
+publish = [
+    "datasets>=3.0",
+    "huggingface-hub>=0.28",
+    "pyarrow>=18.0",
+]
 
 [build-system]
 requires = ["hatchling"]
