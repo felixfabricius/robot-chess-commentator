@@ -40,17 +40,13 @@ def setup(mini, mode):
 
         setup_dir.mkdir(parents=True)
 
-        setup_data= (
-            config.get("setup_folder", {}).get("measurements", {})
-            | {key: config.get("setup_folder", {}).get(key) for key in ["chessboard", "documentation_image"]}
-        )
         annotate_center = config.get("setup_folder", {}).get("annotate_center", True)
         calibration_data = calibrate(mini, setup_dir, annotate_center=annotate_center)
         if calibration_data is None:
             raise RuntimeError("Calibration was aborted before any points were collected.")
 
         with open(setup_dir / "metadata.json", "w", encoding="utf-8") as f:
-            json.dump(setup_data | calibration_data, f, indent=2)
+            json.dump(calibration_data, f, indent=2)
 
         # v2 metadata stores the clicked board corners nested under "actual_corners_px".
         pixel_coordinates = {
