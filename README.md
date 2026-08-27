@@ -43,13 +43,11 @@ Next to the package, the repo also includes
 
 ## How to use
 ### Demo
-To run the move recognition pipeline in just a few minutes, check out the
-[demo](demo/) — ***no robot required***. It lets you
+To run the move recognition pipeline in just a few minutes, try out the demo — ***no robot required***. It lets you
 - transform a chess board image into 64 inputs for the convolutional neural net (CNN)
-- use the CNN to estimate which pieces the squares host; and predict the most likely moves
-  based on those estimates
-- evaluate how well the CNN was able to estimate square occupancy, and whether moves were
-  recognised correctly
+- use the CNN to estimate which pieces each of the squares host
+- predict the most likely moves based on those square estimates
+- evaluate how well the CNN was able to estimate square occupancy, and whether moves were recognised correctly
 
 To run:
 1. Clone the repository:
