@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # Virtual environments
 .venv
 
@@ -35,8 +38,13 @@ trained_models
 # Evaluation
 *evaluation.ipynb
 *evaluation_results.csv
-evaluation/*.csv
 evaluation/*.json
+evaluation/*.csv
+# ...but results.csv is a published artefact: weights/README.md and evaluation/README.md
+# both cite it. The negation works because the rule above excludes FILES, not the
+# directory -- git never descends into an excluded directory, so a negation inside one
+# would be silently ignored.
+!evaluation/results.csv
 
 # demo outputs
 demo/out
