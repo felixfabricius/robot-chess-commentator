@@ -1,5 +1,5 @@
 # robot-chess-commentator
-This codebase enables a [Reachy Mini](https://huggingface.co/blog/reachy-mini) robot to commentate chess games. It recognises moves with 94.5% first-try accuracy, and then generates move-specific comments.
+This codebase enables a [Reachy Mini](https://huggingface.co/blog/reachy-mini) robot to commentate chess games. It recognises moves with 94.6% first-try accuracy, and then generates move-specific comments.
 <p align="center">
   <img src=".github/assets/demo_compressed.gif" alt="Robot comments on a chess move">
 </p>
@@ -28,7 +28,7 @@ The package is `chess_commentator`, under `src/`. `main.py` orchestrates various
 
 Next to the package, the repo also includes
 - `demo/`: demonstrate move recognition system via demo script - can be run without a robot _(see [Demo](#demo))_
-- `evaluation/`: store and analyse eval results created via `chess_commentator.benchmark.harness`
+- `evaluation/`: store and analyse eval results created via `chess_commentator.benchmark.harness; see the [evaluation page]([url](https://github.com/felixfabricius/robot-chess-commentator/tree/main/evaluation)) for eval methodology and results
 - `weights/`: shipped model; also available via HuggingFace under _**insert license**_ and _**provide url**_
 - `tests/`: mirrors package structure; does not require robot or API keys
 - `config.yaml`: various knobs
@@ -91,42 +91,17 @@ In case you'd like to train your own model to classify individual squares, the d
 
 The `chess_commentator.cnn` package under src/ might prove a useful starting point. `chess_commentator.cnn.run` orchestrates training and evaluation.  
 
+## Contributions
+Comments, ideas and PRs welcome! Feel free to leave comments via LinkedIn or Substack. 
 
 ## License
 
-This project ships three things, and they are **not** under the same license.
+This project ships three things under different licenses:
+| Artifact | License | Reason |
+| --- | --- | --- |
+| Source code | [GPL-3.0-or-later](LICENSE) | project depends on [python-chess](https://github.com/niklasf/python-chess), which is GPL-3.0-or-later |
+| Bundled model weights (`weights/`) | [Apache-2.0](weights/LICENSE) | weights are the output of the training code, so the GPL does not reach them |
+| Training dataset (on Hugging Face, not in this repo) | CC-BY-4.0 | sharing and adapting encouraged :) |
 
-| Artifact | License |
-| --- | --- |
-| Source code | [GPL-3.0-or-later](LICENSE) |
-| Bundled model weights (`weights/`) | [Apache-2.0](weights/LICENSE) |
-| Training dataset (on Hugging Face, not in this repo) | CC-BY-4.0 |
-
-### Why GPL, and not something more permissive
-
-Not by preference — by obligation. This project depends on
-[python-chess](https://github.com/niklasf/python-chess), which is **GPL-3.0-or-later**, and it is
-not an incidental dependency: `chess.Board.legal_moves` is what lets the robot rank candidate moves
-against a noisy board reading, which is the core idea of the whole system. Distributing a program
-that links a GPL library means the combined work is GPL, so GPL-3.0-or-later it is.
-
-Every other dependency is GPL-3.0-compatible: BSD (PyTorch, torchvision, SciPy, OmegaConf),
-Apache-2.0 (OpenCV, safetensors, Kokoro), MIT (anthropic, Polars, W&B, Hydra), PSF (Matplotlib),
-and LGPL (pygame).
-
-### Stockfish
-
-[Stockfish](https://stockfishchess.org/) is also GPL-3.0, but it imposes nothing here: it is
-invoked as a **separate process** over the UCI protocol and its binary is never redistributed with
-this repository — you install it yourself. That is an arms-length arrangement, no different from
-shelling out to any other program.
-
-### Why the weights are Apache-2.0 rather than GPL
-
-The model weights are the *output* of the training code, not a derivative work of it — the same
-reason a program compiled with GCC does not inherit GCC's license, which the FSF
-[states explicitly](https://www.gnu.org/licenses/gpl-faq.html#CanIUseGPLToolsForNF). The GPL on the
-training code therefore does not reach them, and they are released permissively so that anyone can
-reuse them. The same weights and license are published on Hugging Face.
 
 Copyright © 2026 Felix Fabricius.
