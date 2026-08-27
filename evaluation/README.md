@@ -46,13 +46,13 @@ Validation-split results, averaged over the 5 validation setups (74 positions):
 
 | Variant | `correct_board` | `correct_square` | `board_rank` |
 | --- | --- | --- | --- |
-| `none_global` — no mask | 30.7% | 60.2% | 0.784 |
-| `square_global` — square mask, uniform padding | 86.0% | 71.6% | 0.989 |
-| `square_per_square` — square mask, per-square padding | 85.9% | 76.0% | 0.984 |
-| `optimised` — piece-location mask, per-square padding | 91.0% | 72.8% | 0.997 |
-| `optimised_plus_prior_correction` — plus class-prior correction | 94.8% | 74.0% | 0.997 |
-| `optimised_5k` — ~5k training squares | 78.8% | 63.9% | 0.980 |
-| `optimised_10k` — ~10k training squares | 91.0% | 70.8% | 0.995 |
+| `none_global`: no mask | 30.7% | 60.2% | 0.784 |
+| `square_global`: square mask, uniform padding | 86.0% | 71.6% | 0.989 |
+| `square_per_square`: square mask, per-square padding | 85.9% | 76.0% | 0.984 |
+| `optimised`: piece-location mask, per-square padding | 91.0% | 72.8% | 0.997 |
+| `optimised_plus_prior_correction`: add class-prior correction | 94.8% | 74.0% | 0.997 |
+| `optimised_5k`: ~5k training squares | 78.8% | 63.9% | 0.980 |
+| `optimised_10k`: ~10k training squares | 91.0% | 70.8% | 0.995 |
 
 
 ### Claude results on validation set
