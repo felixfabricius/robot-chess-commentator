@@ -38,7 +38,17 @@ def main(mini) -> None:
     if config.get("monitor_calibration"):
         launch_calibration_monitor(calibration_metadata_path)
     image_processor = Processor(calibration_metadata_path, "config.yaml")
-    board_estimator = BoardEstimator("CNN", config, calibration_metadata_path, model_weights_path=Path(config.vision.model_weights_path), device="cpu")
+    # Explicit rather than left to BoardEstimator's default, because the bundled checkpoint is only
+    # meaningful with the correction on: it was selected under prior-corrected eval loss, and the
+    # accuracy in weights/README.md was measured that way. See weights/README.md.
+    board_estimator = BoardEstimator(
+        "CNN",
+        config,
+        calibration_metadata_path,
+        model_weights_path=Path(config.vision.model_weights_path),
+        device="cpu",
+        prior_correction=True,
+    )
     input_detector = (
         InputDetector(input_source="robot", mini=mini, calibration_metadata_path=calibration_metadata_path) 
         if config.get("input", {"source": "robot"}).get("source", "robot") == "robot" 
