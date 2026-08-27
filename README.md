@@ -4,6 +4,13 @@ This codebase enables a [Reachy Mini](https://huggingface.co/blog/reachy-mini) r
   <img src=".github/assets/demo_compressed.gif" alt="Robot comments on a chess move">
 </p>
 
+This file covers
+- [codebase layout](#layout)
+- [how to use](#how-to-use) - check out the [demo](url) part to run the move recognition pipeline without a robot 
+- [contributions](#contributions) and [licensing](#licensing)
+
+If you're curious about how the robot is able to recognise moves check out this blog post _**insert link**_ :)
+
 ## Layout
 
 The package is `chess_commentator`, under `src/`. `main.py` orchestrates various package parts to let the robot commentate games:
@@ -84,7 +91,15 @@ If you have a Reachy Mini robot at hand and running, you can let it commentate c
    ```bash
    uv run --group robot python -m chess_commentator.main
    ```
-
+7. _First part of game loop:_ set up the robot
+   - A live camera view opens. Adjust the robot head position so it has a good view of the board: `w`/`s` raise/lower, `i`/`k` pitch up/down, `SPACE` stores current options, `q` aborts.
+   - You are then prompted to click the actual and 'extended' board corners. The console says which corners to click, and in what order. For the extended board corners, imagine a king standing on each corner, and click the top of its crown. Once you've clicked the corners, you can see this in the corner adjustment window by pressing `i` and scrolling the mouse wheel. You can drag any corner marker to adjust it and `SPACE` to accept. If you're interested in why these annotations are so useful, check out this part of the blog. _**insert link**_
+8. _Second part of the game loop_: play the game!
+   - press `SPACE` in the terminal to register a move
+   - wait for the robot move suggestion (this may take a few seconds); if move suggestion incorrect, press `SPACE` to reject; the robot will then come up with a new guess
+   - once correct move suggested, the robot will generate and play a move-specific comment!
+   - register new move after comment is done; keep going until game over (which might prompt a celebratory dance)
+     
 ### Train and evaluate your own move recognition system
 In case you'd like to train your own model to classify individual squares, the dataset with
 23,744 labeled chess square images is openly available on Hugging Face under CC-BY-4.0 _**(insert link**_. So is the model, Apache-2.0, which you can check out for reference.
