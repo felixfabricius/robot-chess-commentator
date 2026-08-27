@@ -78,9 +78,9 @@ def estimate_move(
         model_type="CNN",
         calibration_metadata_path=calibration_metadata_path,
         model_weights_path=WEIGHTS_PATH,
-        # Explicit, not the default: the bundled weights carry a log_prior, and the reported
-        # accuracy was measured without the correction. See main.py.
-        prior_correction=False,
+        # Explicit, not the default: the bundled checkpoint was selected and measured WITH the
+        # prior correction, so running it without would be an unmeasured configuration.
+        prior_correction=True,
     )
     board_estimate = board_estimator.estimate_board(squares_dir)
     
@@ -137,7 +137,7 @@ def evaluate_estimate(board_estimate, board_metadata_path, position):
     print("-" * len(header))
     print("\n".join(output))
     print(
-        "\nIt is likely the case that many of the estimates for individual squarees are incorrect, yet the estimated move ",
+        "\nIt is likely the case that many of the estimates for individual squares are incorrect, yet the estimated move ",
         "is correct (and perhaps highly confidently so).\n",
         "The reason moves can still be estimated well is that only legal moves are compared to another.\n",
         "So the correct move is suggested as long as the resulting board position looks (much less) wrong than legal alternatives!",
