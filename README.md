@@ -1,39 +1,45 @@
 # robot-chess-commentator
-
-A [Reachy Mini](https://huggingface.co/blog/reachy-mini) desktop robot that watches two humans play
-physical chess, reads the board from a single camera photo with a custom 1.3 MB CNN, ranks the legal
-moves to work out what you just played, and then comments on it out loud — praising the good moves
-and roasting the bad ones.
-
-> **Note:** this README is a work in progress. Setup instructions, architecture, and results are
-> still to come — the Setup section below is a stub covering one step of many.
+This codebase enables a [Reachy Mini](https://huggingface.co/blog/reachy-mini) robot to commentate chess games. It recognises moves with 94.5% first-try accuracy, and then generates move-specific comments.
+<p align="center">
+  <img src=".github/assets/demo_compressed.gif" alt="Robot comments on a chess move">
+</p>
 
 ## Layout
 
-The package is `chess_commentator`, under `src/`. Reading down the stack:
-
+The package is `chess_commentator`, under `src/`. `main.py` orchestrates various package parts to let the robot commentate games:
 | | |
 | --- | --- |
-| `main.py` | the game loop — one iteration is one move |
-| `session.py` | setup directory + putting the robot in its capture pose |
-| `game.py` | board state; ranks every *legal* move against a noisy reading |
-| `player_input.py` | "was there an input?", via the antennas or the keyboard |
-| `board.py`, `labels.py` | the shared vocabularies: square/piece names, and the 13-way label encoding |
-| `perception/` | camera frame → rectified board → 64 square crops → a board reading |
-| `vlm/` | Claude-on-**images**: prompts, schemas, and the whole-image reading strategies |
-| `voice/` | Claude-on-**text** + Kokoro TTS + playback |
-| `cnn/` | the 1.3 MB square classifier and its training loop |
-| `dataset/` | offline tools that produce the labelled training data |
-| `benchmark/` | scoring the six board-reading methods against each other |
+| **During a game** | |
+| _Set up_| |
+| `session.py` | orientate robot towards chess board; locate chess board corners in camera image  |
+| `game.py` | keep track of the board position |
+| _For each move_ | |
+| `player_input.py` | register moves and move announcement rejections via keyboard or robot antennas |
+| `perception/` | capture and warp images; cut out 64 inputs for square classifier; call on square classifier to classify squares |
+| `game.py/` | estimate move from square classification results; use chess engine to rate move |
+| `voice/` | announce move; generate move comment text; turn text into audio using Kokoro TTS |
+| | |
+| **Other parts of the package** | |
+| `cnn/` | train and evaluate 1.3 MB convolutional neural network for square classification |
+| `dataset/` | facilitate creation of dataset comprising 23,744 labeled images of chess squares via useful interface |
+| `vlm/` | use various Claude versions and prompts to recognise moves |
+| `benchmark/` | generate evaluation results for different CNN-powered and Claude-powered move recognition approaches |
+| `board.py` and `labels.py` | shared vocabulary for chess squares, pieces and classification scores |
 
-Every `__init__.py` is import-free, so the heavy and hardware-bound dependencies (torch,
-anthropic, kokoro, reachy_mini) stay confined to the modules that actually need them — importing
-`board` pulls in nothing, and importing `vlm` pulls in no torch.
+Next to the package, the repo also includes
+- `demo/`: demonstrate move recognition system via demo script - can be run without a robot _(see [Demo](#demo))_
+- `evaluation/`: store and analyse eval results created via `chess_commentator.benchmark.harness`
+- `weights/`: shipped model; also available via HuggingFace under _**insert license**_ and _**provide url**_
+- `tests/`: mirrors package structure; does not require robot or API keys
+- `config.yaml`: various knobs
 
-`tests/` mirrors this tree. `demo/` sits outside the package and consumes it as an installed
-dependency; it is the only end-to-end run that needs neither the robot nor an API key.
 
-## Setup
+## How to use
+### Demo
+The 
+
+### Commentate chess games
+If you a 
 
 > **TODO:** this section only documents the speech cache. Still to write: `uv sync`, installing
 > Stockfish, the `.env` file (`ANTHROPIC_API_KEY`), and board/camera calibration.
