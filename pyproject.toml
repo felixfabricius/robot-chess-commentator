@@ -27,6 +27,7 @@ dependencies = [
     "torch>=2.12.1",
     "torchvision>=0.27.1",
     "wandb>=0.28.0",
+    "scipy>=1.18.0",
 ]
 
 [project.urls]
@@ -41,7 +42,6 @@ dev = [
 robot = [
     "kokoro>=0.9.4",
     "reachy-mini[mujoco]>=1.8.4",
-    "scipy>=1.18.0",
 ]
 # Only needed to build and push the Hugging Face dataset/model repos
 # (chess_commentator.dataset.publish / publish_model). huggingface-hub is otherwise
