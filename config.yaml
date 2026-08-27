@@ -1,6 +1,6 @@
 root_data_folder: data
 setup_folder:
-  create_new: False
+  create_new: True
   # Click a dedicated centre piece-top during calibration (new v2 style) instead of
   # interpolating the centre from the four extended corners.
   annotate_center: True
@@ -12,8 +12,8 @@ image_processing:
 vision:
   model: CNN
   model_weights_path: weights/model_state_dict.safetensors
-  model_version: claude-opus-4-8
-  prompt_version: 1
+  model_version: claude-opus-4-8 # only used if vision.model is "LLM"
+  prompt_version: 1 # only used if vision.model is "LLM"
   
 engine:
   # Path to a Stockfish binary. null -> $STOCKFISH_PATH, then whatever is on PATH.
