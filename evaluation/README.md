@@ -1,6 +1,6 @@
 This folder stores evaluation results produced by `chess_commentator.benchmark`, and a script to analyse them (`eval.ipynb`).
 
-## Evaluation results
+## Evaluation methodology and validation results
 ### Data split
 The dataset contains labelled images of 371 chess positions (which makes 371 * 64 = 23,744 chess squares). Those chess positions were recorded throughout 50 different "setups": a setup refers to a particular position of the robot relative to the chess board, and usually includes a few chess positions from a single chess game. 
 A technicality: For the statistical analysis done in `eval.ipynb`, the "setup" is the unit of analysis: asking "how likely does approach A outperform approach B on a new game" really means "how likely does approach A outperform approach B on a new setup which is created in a similar manner to the setups in the dataset". 
