@@ -1,7 +1,14 @@
-#%%
-# Set to False to run the image processing steps for two images at the same time.
-ONE_EXAMPLE_ONLY = True
+"""
+To run this from the repo root:
+`uv run python demo/demo.py`
 
+Options:
+- add --pause to only execute one step at a time. Press `ENTER` for the next step.
+  `uv run python demo/demo.py --pause`
+- add --both-examples to run the demo pipeline on both example images in
+  demo/assets (default: only the first one).
+  `uv run python demo/demo.py --both-examples`
+"""
 #%%
 import json
 import sys
@@ -14,6 +21,9 @@ from chess_commentator.perception.board_estimator import BoardEstimator
 from chess_commentator.game import ChessGame
 from chess_commentator.board import PIECES, SQUARES, PIECE_DISPLAY, BoardEstimate
 
+#
+print("Starting demo...")
+
 # Anchor every path to the repo root rather than the working directory, so the demo behaves
 # identically wherever it is launched from. chess_commentator is installed from
 # <repo>/src/chess_commentator, so its __file__ locates the repo without relying on __file__ of
@@ -24,6 +34,8 @@ OUT_DIR = REPO_ROOT / "demo" / "out" / "setup_1"
 
 # Run with --pause to walk through the demo one step at a time.
 PAUSE = "--pause" in sys.argv
+# Run with --both-examples to run the image processing steps for both example images.
+BOTH_EXAMPLES = "--both-examples" in sys.argv
 
 
 def pause(next_step: str) -> None:
@@ -65,7 +77,10 @@ def estimate_move(
     board_estimator = BoardEstimator(
         model_type="CNN",
         calibration_metadata_path=calibration_metadata_path,
-        model_weights_path=WEIGHTS_PATH
+        model_weights_path=WEIGHTS_PATH,
+        # Explicit, not the default: the bundled weights carry a log_prior, and the reported
+        # accuracy was measured without the correction. See main.py.
+        prior_correction=False,
     )
     board_estimate = board_estimator.estimate_board(squares_dir)
     
@@ -124,10 +139,8 @@ def evaluate_estimate(board_estimate, board_metadata_path, position):
     print(
         "\nIt is likely the case that many of the estimates for individual squarees are incorrect, yet the estimated move ",
         "is correct (and perhaps highly confidently so).\n",
-        "Part of the reason many individual square estimates may not be correct is that trainings data is dominated by 'empty' ",
-        "squares, leading to empty squares being more likely to be predicted. (While possible, this is not fully offsetted by adjusting weights.)\n",
-        "More importantly, the reason moves are still estimated well, is that we only compare legal moves to each other.\n",
-        "We tend to estimate the correct move as long as the resulting board position looks (much less) wrong than legal alternatives!",
+        "The reason moves can still be estimated well is that only legal moves are compared to another.\n",
+        "So the correct move is suggested as long as the resulting board position looks (much less) wrong than legal alternatives!",
         sep=""
     )
     print("\n\n")
@@ -135,7 +148,7 @@ def evaluate_estimate(board_estimate, board_metadata_path, position):
     
 
 # %%
-if ONE_EXAMPLE_ONLY:
+if not BOTH_EXAMPLES:
     positions = positions[:1]
 img_processor = Processor(calibration_metadata_path)
 
@@ -187,9 +200,9 @@ for position in positions:
     print(
         f"Estimating moves for {position}\n"
         "-------------------------------\n"
-        "For the 64 squares the model estimated how which piece (if any) is located there. \n",
+        "For the 64 squares the model estimated which piece (if any) is located there. \n",
         "Based on those estimates, the legal moves from the previous position were ordered by ",
-        "how likely they are to have lead to the board position seen in the image. \n",
+        "how likely they are to have lead to the board position seen in the image. (The previous board position is known.) \n",
         f"The actual move is {move}.\n"
         f"From the previous position, there were {len(estimated_moves)} possible moves.\n",
         f"The estimated most likely ones to have been played to lead to the board image in {position_info[position]["img_path"]} are:\n",
