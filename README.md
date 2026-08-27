@@ -6,7 +6,7 @@ This codebase enables a [Reachy Mini](https://huggingface.co/blog/reachy-mini) r
 
 This file covers
 - [codebase layout](#layout)
-- [how to use](#how-to-use) - check out the [demo](url) part to run the move recognition pipeline without a robot 
+- [how to use](#how-to-use) - check out the [demo](#demo) part to run the move recognition pipeline without a robot 
 - [contributions](#contributions) and [licensing](#licensing)
 
 If you're curious about how the robot is able to recognise moves check out this blog post _**insert link**_ :)
