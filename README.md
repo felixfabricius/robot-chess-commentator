@@ -36,7 +36,7 @@ The package is `chess_commentator`, under `src/`. `main.py` orchestrates various
 Next to the package, the repo also includes
 - `demo/`: demonstrate move recognition system via demo script - can be run without a robot _(see [Demo](#demo))_
 - `evaluation/`: store and analyse eval results created via `chess_commentator.benchmark.harness; see the [evaluation page]([url](https://github.com/felixfabricius/robot-chess-commentator/tree/main/evaluation)) for eval methodology and results
-- `weights/`: shipped model; also available via HuggingFace under _**insert license**_ and _**provide url**_
+- `weights/`: shipped model; also available via [HuggingFace]([url](https://huggingface.co/felixfabricius/robot-chess-commentator-cnn))
 - `tests/`: mirrors package structure; does not require robot or API keys
 - `config.yaml`: various knobs
 
@@ -99,8 +99,8 @@ If you have a Reachy Mini robot at hand and running, you can let it commentate c
    - register new move after comment is done; keep going until game over (which might prompt a celebratory dance)
      
 ### Train and evaluate your own move recognition system
-In case you'd like to train your own model to classify individual squares, the dataset with
-23,744 labeled chess square images is openly available on Hugging Face under CC-BY-4.0 _**(insert link**_. So is the model, Apache-2.0, which you can check out for reference.
+In case you'd like to train your own model to classify individual squares, the [dataset]([url](https://huggingface.co/datasets/felixfabricius/robot-chess-commentator-squares)) with
+23,744 labeled chess square images is openly available on Hugging Face under CC-BY-4.0. So is the [model]([url](https://huggingface.co/felixfabricius/robot-chess-commentator-cnn)), Apache-2.0, which you can check out for reference.
 
 The `chess_commentator.cnn` package under src/ might prove a useful starting point. `chess_commentator.cnn.run` orchestrates training and evaluation.  
 
