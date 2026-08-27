@@ -36,30 +36,61 @@ Next to the package, the repo also includes
 
 ## How to use
 ### Demo
-The 
+To run the move recognition pipeline in just a few minutes, check out the
+[demo](demo/) — ***no robot required***. It lets you
+- transform a chess board image into 64 inputs for the convolutional neural net (CNN)
+- use the CNN to estimate which pieces the squares host; and predict the most likely moves
+  based on those estimates
+- evaluate how well the CNN was able to estimate square occupancy, and whether moves were
+  recognised correctly
+
+To run:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/felixfabricius/robot-chess-commentator.git
+   ```
+2. [Install uv](https://docs.astral.sh/uv/getting-started/installation/); then download the
+   required packages:
+   ```bash
+   uv sync
+   ```
+3. Run the demo from the repo root:
+   ```bash
+   uv run python demo/demo.py
+   ```
+   (add `--pause` to step through it one stage at a time)
 
 ### Commentate chess games
-If you a 
+If you have a Reachy Mini robot at hand and running, you can let it commentate chess games.
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/felixfabricius/robot-chess-commentator.git
+   ```
+2. [Install uv](https://docs.astral.sh/uv/getting-started/installation/); then download the
+   required packages, incl. the robot-specific ones (e.g. the Reachy Mini SDK):
+   ```bash
+   uv sync --group robot
+   ```
+3. Create a `.env` file in the repo root with an Anthropic API key, which is used to generate comment texts.
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+4. Install [Stockfish](https://stockfishchess.org/download/) and point `engine.stockfish_path` in `config.yaml` at the binary. (Alternatively, just ensure Stockfish is on your PATH.) Required for rating moves.
+5. **_Optional_**: pregenerate the audio fragments which constitute move announcements, like "E2 to E4?". This takes around 5-8 minutes and reduces time per move announcement by around a second.
+   ```bash
+   uv run python -m chess_commentator.voice.pregenerate
+   ```
+6. Start the game loop:
+   ```bash
+   uv run --group robot python -m chess_commentator.main
+   ```
 
-> **TODO:** this section only documents the speech cache. Still to write: `uv sync`, installing
-> Stockfish, the `.env` file (`ANTHROPIC_API_KEY`), and board/camera calibration.
+### Train and evaluate your own move recognition system
+In case you'd like to train your own model to classify individual squares, the dataset with
+23,744 labeled chess square images is openly available on Hugging Face under CC-BY-4.0 _**(insert link**_. So is the model, Apache-2.0, which you can check out for reference.
 
-### Pregenerate the move announcements
+The `chess_commentator.cnn` package under src/ might prove a useful starting point. `chess_commentator.cnn.run` orchestrates training and evaluation.  
 
-```bash
-uv run python -m chess_commentator.voice.pregenerate
-```
-
-Run this once before the first game. It synthesizes the ~150 fragments that every move
-suggestion is spliced together from — `"E2 to,"`, `"E4?"`, `"Castle kingside?"` and so on — and
-caches them under `.cache/speech/<voice>/` (gitignored, ~10 MB). Takes 5–8 minutes. It is
-resumable: a crash keeps whatever it already baked, and re-running only fills the gaps.
-
-This step is **optional**. Skip it and the robot still plays — it just falls back to
-synthesizing each suggestion live, which costs about 2.2 seconds per suggested move, on the
-main thread, while everyone waits. It warns you at startup if the cache is cold.
-
-Re-run it after changing `speaker.voice` in `config.yaml`, which invalidates the cache.
 
 ## License
 
