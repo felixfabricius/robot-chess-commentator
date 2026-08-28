@@ -20,13 +20,13 @@ The approaches differ in three ways:
 #### Claude-powered approaches
 Claude-powered approaches differ in "approach" (prompt used), model version, reasoning and resoning effort.
 - Prompts:
-| | |
-| --- | --- |
-| `square_label` | one call per square; hard label |
-| `square_logits` | one call per square; return one score for each of the 13 possibilities |
-| `move` | one call per board; return candidate moves ordered by likelihood |
-| `board` | one call per board; return candidate FENs (board positions) ordered by likelihood |
-| `fen_whole` | one call per board; return a single FEN string |
+  | | |
+  | --- | --- |
+  | `square_label` | one call per square; hard label |
+  | `square_logits` | one call per square; return one score for each of the 13 possibilities |
+  | `move` | one call per board; return candidate moves ordered by likelihood |
+  | `board` | one call per board; return candidate FENs (board positions) ordered by likelihood |
+  | `fen_whole` | one call per board; return a single FEN string |
 - Models: Opus 5, Sonnet 5, Opus 4.8
 - Reasoning: off / extended thinking; if on, then with max tokens set to 8192
 - Effort: low / medium / high
