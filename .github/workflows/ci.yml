@@ -28,6 +28,20 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      # reachy-mini depends on pygobject on Linux only (elsewhere it takes the prebuilt
+      # gstreamer-bundle wheel), so none of this is visible on a Windows/macOS dev machine.
+      # pygobject and pycairo are also the only two entries in the lock with no wheels at all:
+      # they build from source and need the cairo + gobject-introspection headers. The gir1.2-*
+      # typelibs are a separate, runtime need: `import reachy_mini` reaches media modules that do
+      # `gi.require_version("Gst"/"GstApp"/"GstPbutils", "1.0")` at module scope, which the
+      # "Every module imports" step below exercises for real.
+      - name: System deps for pygobject/GStreamer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libgirepository1.0-dev \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+
       # --all-groups, not the default: test_speaker.py and test_outro.py import kokoro and the
       # reachy SDK as ordinary libraries. Nothing in the suite touches hardware or the network.
       - name: Install
