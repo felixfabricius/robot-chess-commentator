@@ -27,6 +27,8 @@ Claude-powered approaches differ in "approach" (prompt used), model version, rea
   | `move` | one call per board; return candidate moves ordered by likelihood |
   | `board` | one call per board; return candidate FENs (board positions) ordered by likelihood |
   | `fen_whole` | one call per board; return a single FEN string |
+
+  See the [code](https://github.com/felixfabricius/robot-chess-commentator/blob/main/src/chess_commentator/vlm/prompts.py) for the actual prompt wording.
 - Models: Opus 5, Sonnet 5, Opus 4.8
 - Reasoning: off / extended thinking; if on, then with max tokens set to 8192
 - Effort: low / medium / high
