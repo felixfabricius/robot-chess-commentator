@@ -1,6 +1,6 @@
 import pytest
 
-from chess_commentator.game import ChessGame
+from chess_commentator.game import ChessGame, resolve_stockfish_path
 from chess_commentator.board import SquareEstimate, BoardEstimate
 from chess_commentator.board import SQUARES
 from chess_commentator.labels import TARGET_MAP
@@ -155,6 +155,24 @@ def test_describe_move(fen, move_uci, expected, make_game):
 
 ### cp_loss_for: the sign must follow the side that MOVES, not the side to move afterwards
 
+# The only tests in the suite that need a real engine. Everything else either never asks for an
+# evaluation or hands apply_move a cp_loss, so the rest of the file runs with no Stockfish at
+# all -- and these skip rather than fail, because an engine is not a test dependency.
+# resolve_stockfish_path is the resolver the production code uses, so this cannot drift from it.
+def _stockfish_available():
+    try:
+        resolve_stockfish_path()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+requires_stockfish = pytest.mark.skipif(
+    not _stockfish_available(), reason="no Stockfish binary found"
+)
+
+
+@requires_stockfish
 def test_cp_loss_punishes_a_blunder(make_game):
     """1. f3 e5 2. g4?? hangs mate-in-one (Qh4#).
 
@@ -169,12 +187,14 @@ def test_cp_loss_punishes_a_blunder(make_game):
     assert cp_loss > 500
 
 
+@requires_stockfish
 def test_cp_loss_forgives_a_good_move(make_game):
     game = make_game()
     cp_loss, _ = game.cp_loss_for("e2e4")
     assert cp_loss < 60
 
 
+@requires_stockfish
 def test_cp_loss_for_does_not_mutate(make_game):
     game = make_game()
     before = game.fen()
