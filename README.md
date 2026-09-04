@@ -105,7 +105,7 @@ In case you'd like to train your own model to classify individual squares, the [
 The `chess_commentator.cnn` package under src/ might prove a useful starting point. `chess_commentator.cnn.run` orchestrates training and evaluation.  
 
 ## Contributions
-Comments, ideas and PRs welcome! Feel free to leave comments via LinkedIn or Substack. 
+Comments, ideas and PRs welcome! Feel free to leave comments via [LinkedIn](https://lnkd.in/p/exCKWzMy) or [Substack](https://substack.com/@felixfabricius/note/p-210209715). 
 
 ## License
 
