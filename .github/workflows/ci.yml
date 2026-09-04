@@ -1,27 +1,43 @@
 name: CI
 
+# CI is triggered on any push to main,
+# any pull request (any branch), and 
+# workflow_dispatch (which adds a manual "Run workflow" button in GitHub UI)
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
+
 concurrency:
+  # Runs are grouped by branch/ref
   group: ci-${{ github.ref }}
+  # If I push twice in quick succcession to same branch, 
+  # oder-in-progress run is cancelled
   cancel-in-progress: true
 
 jobs:
+  # A single job `check` is ru non a fresh Ubuntu VM with 30 min timeout.
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Variables to pass to environment
     env:
       # torch resolves to the CUDA build by default, which is ~2.5 GB of wheels for a job that
       # only ever runs forward passes on tiny tensors.
       UV_TORCH_BACKEND: cpu
 
     steps:
+      # Syntax here. uses runs pre-packaged action. Alternative is `run` (see below).
+      # Reference format for `uses: ` is {owner}/{repo}@{ref}
+        # actions: the GitHub org/user that owns the repo; 
+        # checkout is repository name; 
+        # and @v4 is a git ref: a tag, branch or commit to pin to
+        # This clones the repo onto a runner
       - uses: actions/checkout@v4
 
+      # Installs uv
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -45,9 +61,15 @@ jobs:
       # --all-groups, not the default: test_speaker.py and test_outro.py import kokoro and the
       # reachy SDK as ordinary libraries. Nothing in the suite touches hardware or the network.
       - name: Install
+        # --frozen makes installation process very fast by just
+        # deferring to current lockfile rather than trying to 
+        # resolve dependencies
         run: uv sync --all-groups --frozen
 
+      # This runs ruff on src tests and demo folders
+      # In pyproject.toml ruff is listed as a dependency in the dev group.
       - name: Lint
+        # Should this include --group dev? Reason: dev is default uv run group.
         run: uv run ruff check src tests demo
 
       # The single highest-value check for a repo that has just been renamed and re-laid-out: a
@@ -88,12 +110,24 @@ jobs:
           PY
 
       # The data-dependent modules skip themselves here: data/ is gitignored and ~19 GB.
+      # -q "quiets" pytest, i.e. makes output less verbose.
       - name: Tests
         run: uv run pytest -q
 
       # hatchling cannot infer the package dir (import name != distribution name), so the wheel
       # contents are a real failure mode rather than a formality. cnn/config.yaml must ship too
       # or Hydra has nothing to load.
+      # Context: 
+        # a wheel (.whl) is Python's standard built, installable package format
+        # it has a specific internal layout and a .dist-info/ directory containing metadata
+        # (name, version, dependencies, entry points).
+        # `pip install some-package` -> pip downloads a whell and unpacks it into
+        # site-packages/ - no compiling or running setup scripts. That's the point of
+        # wheels: they are install-ready artifacts.
+        # uv build turns a source tree into that zip file using whatever is declared as the 
+        # build backend, in this case hatchling. (see pyproject.toml)
+      # Building wheel is necessary to e.g. upload to PyPI;
+      # right now, the build is only a correctness check.
       - name: Build
         run: |
           uv build
@@ -106,3 +140,4 @@ jobs:
           assert any(n.endswith("cnn/config.yaml") for n in names), "Hydra config missing from wheel"
           print(f"{wheel}: {tops}, hydra config present")
           PY
+  
