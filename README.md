@@ -9,7 +9,7 @@ This file covers
 - [how to use](#how-to-use) - check out the [demo](#demo) part to run the move recognition pipeline without a robot 
 - [contributions](#contributions) and [licensing](#licensing)
 
-If you're curious about how the robot is able to recognise moves check out this blog post _**insert link**_ :)
+**If you're curious about how the robot is able to recognise moves check out this [blog post](https://felixfabricius.substack.com/p/i-taught-a-robot-to-roast-my-chess?r=5egqvt&utm_campaign=post-expanded-share&utm_medium=post%20viewer)**!:)
 
 ## Layout
 
